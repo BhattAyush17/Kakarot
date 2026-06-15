@@ -24,7 +24,7 @@ from services.tool_runtime import (
     get_session_tools,
 )
 from services.tts_service import synthesize_pcm16
-from services.voice_intents import try_direct_smart_home_intent
+from services.voice_intents import try_direct_open_app_intent, try_direct_smart_home_intent
 from services.wake_phrase import strip_configured_wake_phrase
 from services.whisper_service import transcribe_pcm16
 
@@ -181,10 +181,13 @@ async def local_session_proxy(
         history[0] = {"role": "system", "content": _system_prompt(config_now, local_now, prompt, name)}
 
         history.append({"role": "user", "content": user_text})
-        # Deterministic fast path: direct on/off commands matching an enabled
-        # Home Assistant device are executed without the LLM.
+        # Deterministic fast path: direct commands executed without the LLM.
+        # App-open is checked first, then HA on/off (the "abrir/open" verb is
+        # shared, so a registered app wins over Home Assistant).
         try:
-            direct_answer = await try_direct_smart_home_intent(user_text, config_now)
+            direct_answer = await try_direct_open_app_intent(user_text, config_now)
+            if direct_answer is None:
+                direct_answer = await try_direct_smart_home_intent(user_text, config_now)
         except Exception as exc:
             _log_error(f"direct intent fallback: {exc}")
             direct_answer = None

@@ -336,10 +336,67 @@ class DebugConfig(BaseModel):
     replay_audio: bool = False
 
 
+class ApplicationItem(BaseModel):
+    """A user-registered desktop application BitMon may launch by name."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = ""
+    command: str = ""
+    aliases: list[str] = Field(default_factory=list)
+    enabled: bool = True
+
+    @field_validator("name", "command", mode="before")
+    @classmethod
+    def validate_text(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("aliases", mode="before")
+    @classmethod
+    def validate_aliases(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            items = value.split(",")
+        elif isinstance(value, list):
+            items = value
+        else:
+            items = []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            text = str(item or "").strip()
+            key = text.lower()
+            if text and key not in seen:
+                seen.add(key)
+                normalized.append(text)
+        return normalized
+
+
 class ToolsConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     screen_analysis: bool = True
     open_configuration: bool = True
+    open_application: bool = True
+    applications: list[ApplicationItem] = Field(default_factory=list)
+    weather: bool = False
+    weather_location: str = ""
+
+    @field_validator("weather_location", mode="before")
+    @classmethod
+    def validate_weather_location(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("applications", mode="before")
+    @classmethod
+    def validate_applications(cls, value: Any) -> list[Any]:
+        if not isinstance(value, list):
+            return []
+        # Drop rows with no name and no command; the UI can carry blank drafts.
+        return [
+            item
+            for item in value
+            if isinstance(item, dict)
+            and (str(item.get("name") or "").strip() or str(item.get("command") or "").strip())
+        ]
 
 
 class UiConfig(BaseModel):

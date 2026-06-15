@@ -12,8 +12,10 @@ import webbrowser
 from typing import Any
 
 from services.mcp_external import call_mcp_tool
+from tools.applications import list_applications, open_application
 from tools.home_assistant import execute_home_assistant_request
 from tools.screen_tools import analyze_screen
+from tools.weather import get_weather
 
 
 SCREEN_ANALYZE_TOOL: dict[str, Any] = {
@@ -47,6 +49,62 @@ OPEN_CONFIGURATION_TOOL: dict[str, Any] = {
     "parameters": {
         "type": "object",
         "properties": {},
+    },
+}
+
+
+OPEN_APPLICATION_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "open_application",
+    "description": (
+        "Open (launch/run/start) one of the user's registered desktop applications, in any "
+        "language. Use this whenever the user asks to open, run, launch or start a program "
+        "(e.g. \"open Photoshop\", \"executa o photoshop pra mim\"). Pass the application name "
+        "as the user referred to it; the backend resolves it against the user's allowlist. "
+        "Use action='list' to enumerate which applications you can open."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["open", "list"],
+                "description": "Use 'open' to launch an application, 'list' to enumerate them.",
+            },
+            "name": {
+                "type": "string",
+                "description": (
+                    "Application name exactly as the user referred to it, in their own "
+                    "language. Required for action='open'; omit it for action='list'."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+
+GET_WEATHER_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "get_weather",
+    "description": (
+        "Get the current weather and a short forecast for a city, in any language. Use this "
+        "whenever the user asks about the weather, temperature, rain, or forecast (e.g. \"como vai "
+        "estar o tempo amanhã?\", \"is it going to rain in Lisbon?\"). If the user names a city, pass "
+        "it as location; otherwise omit location to use the city configured in BitMon."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "location": {
+                "type": "string",
+                "description": (
+                    "City or place name the user asked about, in their own language (e.g. "
+                    "\"São Paulo\", \"Lisbon\"). Omit it to use the configured default city."
+                ),
+            },
+        },
+        "required": [],
     },
 }
 
@@ -102,7 +160,13 @@ HOME_ASSISTANT_TOOL: dict[str, Any] = {
 }
 
 
-SESSION_TOOLS: list[dict[str, Any]] = [SCREEN_ANALYZE_TOOL, OPEN_CONFIGURATION_TOOL, HOME_ASSISTANT_TOOL]
+SESSION_TOOLS: list[dict[str, Any]] = [
+    SCREEN_ANALYZE_TOOL,
+    OPEN_CONFIGURATION_TOOL,
+    OPEN_APPLICATION_TOOL,
+    GET_WEATHER_TOOL,
+    HOME_ASSISTANT_TOOL,
+]
 LEGACY_NAME = "digi" + "mon"
 
 
@@ -117,6 +181,11 @@ TOOL_INSTRUCTIONS = (
     "Do not answer with a visibility disclaimer if screen_analyze returned ok=true. "
     "When calling screen_analyze, pass the user's actual request or goal as the question. "
     "If the user asks to open the BitMon configuration page or settings, call open_configuration. "
+    "If the user asks to open, run, launch or start a desktop application (e.g. Photoshop), call "
+    "open_application with the application name as the user said it; never invent a file path. "
+    "If the user asks which applications you can open, call open_application with action='list'. "
+    "If the user asks about the weather, temperature, rain, or forecast, call get_weather; pass the "
+    "city if the user named one, otherwise omit location to use the configured city. "
     "If the user asks to control or query smart-home devices, call home_assistant. "
     "NEVER claim a smart-home action was performed unless home_assistant was called in the CURRENT turn "
     "and returned ok=true; previous turns do not count. If you did not call it yet, call it now instead "
@@ -218,12 +287,28 @@ def _external_mcp_tool(config: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _has_enabled_application(config: dict[str, Any]) -> bool:
+    apps = config.get("tools", {}).get("applications")
+    if not isinstance(apps, list):
+        return False
+    return any(
+        isinstance(app, dict)
+        and app.get("enabled", True)
+        and str(app.get("command") or "").strip()
+        for app in apps
+    )
+
+
 def get_session_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     if config.get("tools", {}).get("screen_analysis", False):
         tools.append(SCREEN_ANALYZE_TOOL)
     if config.get("tools", {}).get("open_configuration", False):
         tools.append(OPEN_CONFIGURATION_TOOL)
+    if config.get("tools", {}).get("open_application", False) and _has_enabled_application(config):
+        tools.append(OPEN_APPLICATION_TOOL)
+    if config.get("tools", {}).get("weather", False):
+        tools.append(GET_WEATHER_TOOL)
     ha_config = config.get("mcps", {}).get("home_assistant", {})
     if ha_config.get("enabled") and str(ha_config.get("url") or "").strip():
         tools.append(HOME_ASSISTANT_TOOL)
@@ -554,6 +639,8 @@ async def create_chat_completion_with_tools(
 TOOL_LOG_LABELS = {
     "screen_analyze": "[Capability] Screen analysis",
     "open_configuration": "[Capability] Open configuration",
+    "open_application": "[Capability] Open application",
+    "get_weather": "[Capability] Weather",
     "home_assistant": "[Tool] Home Assistant (MCP)",
     "external_mcp": "[Tool] External MCP",
 }
@@ -610,6 +697,14 @@ async def _dispatch_tool_call(
         if opened:
             return {"ok": True, "url": url, "answer": f"Opening configuration page: {url}"}
         return {"ok": False, "url": url, "error": f"Could not open configuration page: {url}"}
+
+    if name == "open_application":
+        if str(arguments.get("action") or "open").strip().lower() == "list":
+            return list_applications()
+        return await open_application(str(arguments.get("name") or ""))
+
+    if name == "get_weather":
+        return await get_weather(str(arguments.get("location") or ""))
 
     if name == "home_assistant":
         raw_targets = arguments.get("targets")

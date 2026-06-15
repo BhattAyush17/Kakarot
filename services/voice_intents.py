@@ -21,6 +21,7 @@ import unicodedata
 from typing import Any
 
 from core.config_defaults import HOME_ASSISTANT_DEFAULT_ANSWERS
+from tools.applications import open_application, resolve_application
 from tools.home_assistant import _resolve_target, execute_home_assistant_request
 
 
@@ -59,6 +60,38 @@ INTENT_PHRASES: dict[str, tuple[str, ...]] = {
         # German
         "einschalten", "anschalten", "anmachen", "oeffne", "oeffnen",
     ),
+}
+
+# Verbs that, followed by a registered application name, launch it locally
+# without the LLM. Broader than the HA "turn_on" set (includes run/launch/start
+# in pt/en/es/fr/it/de). App detection runs BEFORE the smart-home intent, so a
+# match here wins over Home Assistant; anything else falls through unchanged.
+OPEN_APP_PHRASES: tuple[str, ...] = (
+    # Portuguese
+    "abrir", "abre", "abra", "executar", "executa", "execute",
+    "rodar", "roda", "iniciar", "inicia", "inicie", "inicializar",
+    "inicializa", "lancar", "lanca", "lance",
+    # English
+    "open", "run", "launch", "start", "execute",
+    # Spanish
+    "abrir", "abre", "ejecutar", "ejecuta", "iniciar", "inicia", "lanzar", "lanza",
+    # French
+    "ouvrir", "ouvre", "lancer", "lance", "demarrer", "demarre", "executer", "execute",
+    # Italian
+    "aprire", "apri", "avviare", "avvia", "lanciare", "lancia", "eseguire", "esegui",
+    # German
+    "oeffne", "oeffnen", "starte", "starten", "ausfuehren", "oeffnest",
+)
+
+# Short, fixed spoken confirmations per language so the synthesized audio is
+# cacheable and replayable, like the Home Assistant intent answers.
+OPEN_APP_ANSWERS: dict[str, str] = {
+    "pt": "Abrindo.",
+    "en": "Opening.",
+    "es": "Abriendo.",
+    "fr": "J'ouvre.",
+    "it": "Apro.",
+    "de": "Öffne.",
 }
 
 # Filler tokens stripped from the edges of the device name.
@@ -174,3 +207,67 @@ async def try_direct_smart_home_intent(text: str, config: dict[str, Any]) -> str
         f"(direct, LLM skipped, {time.perf_counter() - started:.2f}s)"
     )
     return pick_intent_answer(action, config)
+
+
+def pick_open_app_answer(config: dict[str, Any]) -> str:
+    """Fixed spoken confirmation for a direct app-open command, by TTS language."""
+    language = str(config.get("speech", {}).get("tts_language") or "en")[:2].lower()
+    return OPEN_APP_ANSWERS.get(language) or OPEN_APP_ANSWERS["en"]
+
+
+def detect_open_app_target(text: str) -> str | None:
+    """Return the application name from a direct "open X" command, else None."""
+    raw = str(text or "").strip()
+    if not raw or len(raw) > 200 or "?" in raw:
+        return None
+    norm = _normalize(raw)
+    if not norm:
+        return None
+
+    best: re.Match[str] | None = None
+    for phrase in OPEN_APP_PHRASES:
+        found = re.search(rf"\b{re.escape(phrase)}\b", norm)
+        if found and (best is None or found.start() < best.start()):
+            best = found
+    if best is None:
+        return None
+
+    target_tokens = norm[best.end():].split()
+    while target_tokens and target_tokens[0] in _EDGE_STOPWORDS:
+        target_tokens.pop(0)
+    while target_tokens and target_tokens[-1] in _EDGE_STOPWORDS:
+        target_tokens.pop()
+    if not target_tokens:
+        return None
+    return " ".join(target_tokens)
+
+
+async def try_direct_open_app_intent(text: str, config: dict[str, Any]) -> str | None:
+    """Launch a registered application without the LLM. Returns the spoken
+    confirmation on success, or None to fall through to the HA/LLM flow.
+
+    Runs before the smart-home intent: a sentence like "abrir Photoshop" is
+    only handled here when it matches a configured app, otherwise it falls
+    through untouched (so "abrir/open" still works for Home Assistant)."""
+    if not config.get("tools", {}).get("open_application", False):
+        return None
+
+    target = detect_open_app_target(text)
+    if not target:
+        return None
+
+    # Resolve locally first: no app match means no launch and no log noise.
+    if resolve_application(target, config) is None:
+        return None
+
+    started = time.perf_counter()
+    result = await open_application(target, config=config)
+    if not result.get("ok"):
+        print(f"[Intent] open app {target!r} failed ({str(result.get('error'))[:120]}); falling back to LLM")
+        return None
+
+    print(
+        f"[Intent] open -> {result.get('app')!r} "
+        f"(direct, LLM skipped, {time.perf_counter() - started:.2f}s)"
+    )
+    return pick_open_app_answer(config)

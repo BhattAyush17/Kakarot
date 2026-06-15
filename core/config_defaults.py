@@ -137,6 +137,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tools": {
         "screen_analysis": True,
         "open_configuration": True,
+        "open_application": True,
+        "applications": [],
+        "weather": False,
+        "weather_location": "",
     },
     "ui": {
         "locale": "en-US",

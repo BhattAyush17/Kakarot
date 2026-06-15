@@ -1395,6 +1395,7 @@
       <button class="tab" type="button" data-tab="microphone"><span data-i18n="tabs.microphone">Microphone</span></button>
       <button class="tab" type="button" data-tab="overlay"><span data-i18n="tabs.overlay">Overlay</span></button>
       <button class="tab" type="button" data-tab="capabilities"><span data-i18n="tabs.capabilities">Capabilities</span></button>
+      <button class="tab" type="button" data-tab="apps"><span data-i18n="tabs.apps">Apps</span></button>
       <button class="tab" type="button" data-tab="persona"><span data-i18n="tabs.persona">Persona</span></button>
       <button class="tab" type="button" data-tab="themes"><span data-i18n="tabs.themes">Themes</span></button>
       <button class="tab" type="button" data-tab="mcps"><span data-i18n="tabs.mcps">MCPs</span></button>
@@ -1706,7 +1707,31 @@
           <label class="toggle"><span data-i18n="fields.openConfiguration">Open configuration</span>
             <input name="tools.open_configuration" type="checkbox" />
           </label>
+          <label class="toggle"><span data-i18n="fields.openApplication">Open applications</span>
+            <input name="tools.open_application" type="checkbox" />
+          </label>
+          <label class="toggle"><span data-i18n="fields.weather">Weather forecast</span>
+            <input name="tools.weather" type="checkbox" id="weather-enabled" />
+          </label>
         </div>
+        <div class="field-block" id="weather-location-field" hidden style="margin-top:18px;">
+          <label><span data-i18n="fields.weatherLocation">City / location</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <input name="tools.weather_location" id="weather-location" autocomplete="off" data-i18n-placeholder="placeholders.weatherLocation" placeholder="São Paulo, BR" style="flex:1;min-width:0;" />
+              <button class="action" type="button" id="weather-test" data-i18n="actions.testWeather">Test</button>
+            </div>
+          </label>
+          <div class="hint" id="weather-preview"></div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="apps">
+        <div class="device-toolbar answers-toolbar">
+          <span class="persona-meta" id="apps-summary" data-i18n="sections.apps.hint">Apps the pet can open by voice or on request</span>
+          <button class="action" type="button" id="apps-add" data-i18n="actions.addApp">Add app</button>
+        </div>
+        <div class="hint" data-i18n="apps.hint">Register the apps the pet may launch. Say "open &lt;name&gt;" to launch one directly, or ask the assistant in a sentence. Enter the full path to the .exe/.lnk (or a command/URL) and optional aliases. Saved with the configuration.</div>
+        <div class="device-list" id="apps-list"></div>
       </section>
 
       <section class="panel" data-panel="persona">
@@ -2174,6 +2199,14 @@
     const answersList = document.querySelector("#answers-list");
     const answersSummary = document.querySelector("#answers-summary");
     const answersAdd = document.querySelector("#answers-add");
+    const appsList = document.querySelector("#apps-list");
+    const appsSummary = document.querySelector("#apps-summary");
+    const appsAdd = document.querySelector("#apps-add");
+    const weatherEnabled = document.querySelector("#weather-enabled");
+    const weatherLocationField = document.querySelector("#weather-location-field");
+    const weatherLocation = document.querySelector("#weather-location");
+    const weatherTest = document.querySelector("#weather-test");
+    const weatherPreview = document.querySelector("#weather-preview");
     const devicesList = document.querySelector("#devices-list");
     const devicesFilter = document.querySelector("#devices-filter");
     const devicesToggleAll = document.querySelector("#devices-toggle-all");
@@ -2223,6 +2256,7 @@
     let devices = [];
     let devicesDirty = false;
     let haAnswers = [];
+    let appsData = [];
     let mcpServers = [];
     let personaLibrary = {active: "", personas: []};
     let personaConfig = null;
@@ -2303,6 +2337,7 @@
       renderMcpServers();
       if (devices.length) renderDevices();
       renderAnswers();
+      renderApps();
       renderPersonaLibrary();
       if (personaConfig) renderPersonaAnimations();
       if (themeConfig) renderThemeEditor();
@@ -3219,6 +3254,121 @@
       renderAnswers();
       answersList.querySelector(`[data-answer-text="${haAnswers.length - 1}"]`)?.focus();
       setStatus("status.answersPending");
+    }
+
+    // Apps the pet may launch. aliases are kept as a comma string while
+    // editing and split into a list on save (gatherConfig).
+    const APP_ROW_STYLE = "display:grid;grid-template-columns:auto 1.2fr 2.4fr 1.4fr auto auto;gap:8px;align-items:center;";
+
+    function renderApps() {
+      if (!appsList) return;
+      setText(appsSummary, "status.appsSummary", {total: appsData.length});
+      appsList.innerHTML = `
+        <div class="answer-row device-head" style="${APP_ROW_STYLE}">
+          <div>${escapeHtml(t("apps.columns.use"))}</div>
+          <div>${escapeHtml(t("apps.columns.name"))}</div>
+          <div>${escapeHtml(t("apps.columns.command"))}</div>
+          <div>${escapeHtml(t("apps.columns.aliases"))}</div>
+          <div></div>
+          <div></div>
+        </div>
+      `;
+      appsData.forEach((app, index) => {
+        const enabled = app.enabled !== false;
+        const row = document.createElement("div");
+        row.className = `answer-row${enabled ? "" : " answer-off"}`;
+        row.setAttribute("style", APP_ROW_STYLE);
+        row.innerHTML = `
+          <input data-app-enabled="${index}" type="checkbox" ${enabled ? "checked" : ""} title="${escapeHtml(t("apps.enableTitle"))}" />
+          <input data-app-name="${index}" value="${escapeHtml(app.name || "")}" placeholder="${escapeHtml(t("placeholders.appName"))}" />
+          <div style="display:flex;gap:6px;min-width:0;">
+            <input data-app-command="${index}" value="${escapeHtml(app.command || "")}" placeholder="${escapeHtml(t("placeholders.appCommand"))}" style="flex:1;min-width:0;" />
+            <button class="action" type="button" data-app-browse="${index}">${escapeHtml(t("actions.browse"))}</button>
+          </div>
+          <input data-app-aliases="${index}" value="${escapeHtml(app.aliases || "")}" placeholder="${escapeHtml(t("placeholders.appAliases"))}" />
+          <button class="action" type="button" data-app-test="${index}">${escapeHtml(t("actions.testApp"))}</button>
+          <button class="action danger" type="button" data-app-delete="${index}">${escapeHtml(t("actions.delete"))}</button>
+        `;
+        appsList.appendChild(row);
+      });
+    }
+
+    function addAppRow() {
+      appsData.push({name: "", command: "", aliases: "", enabled: true});
+      renderApps();
+      appsList.querySelector(`[data-app-name="${appsData.length - 1}"]`)?.focus();
+      setStatus("status.appsPending");
+    }
+
+    async function testApp(index) {
+      const app = appsData[index];
+      const name = String(app?.name || "").trim();
+      if (!name) {
+        notify("status.appTestNoName", "warning");
+        return;
+      }
+      try {
+        const res = await fetch("/api/applications/open", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name}),
+        });
+        const result = await res.json();
+        if (result.ok) {
+          notify("status.appTestOk", "success", {name: result.app || name});
+        } else {
+          notify("status.appTestFailed", "error", {error: String(result.error || "").slice(0, 160)});
+        }
+      } catch (err) {
+        notify("status.appTestFailed", "error", {error: err.message});
+      }
+    }
+
+    async function browseApp(index) {
+      try {
+        const res = await fetch("/api/applications/browse", {method: "POST"});
+        const result = await res.json();
+        if (result.canceled) return;
+        if (!result.ok || !result.path) {
+          notify("status.appBrowseFailed", "error", {error: String(result.error || "").slice(0, 160)});
+          return;
+        }
+        appsData[index].command = result.path;
+        // Only fill the name from the file when the user has not named it yet.
+        if (!String(appsData[index].name || "").trim() && result.name) {
+          appsData[index].name = result.name;
+        }
+        renderApps();
+        setStatus("status.appsPending");
+      } catch (err) {
+        notify("status.appBrowseFailed", "error", {error: err.message});
+      }
+    }
+
+    function syncWeatherVisibility() {
+      if (weatherLocationField) weatherLocationField.hidden = !weatherEnabled?.checked;
+    }
+
+    async function previewWeather() {
+      const location = String(weatherLocation?.value || "").trim();
+      if (weatherPreview) weatherPreview.textContent = t("status.weatherPreviewLoading");
+      try {
+        const res = await fetch("/api/weather/preview", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({location}),
+        });
+        const result = await res.json();
+        if (result.ok) {
+          if (weatherPreview) weatherPreview.textContent = result.answer || "";
+        } else {
+          if (weatherPreview) weatherPreview.textContent = "";
+          notify("status.weatherPreviewFailed", "error", {error: String(result.error || "").slice(0, 160)});
+        }
+      } catch (err) {
+        if (weatherPreview) weatherPreview.textContent = "";
+        notify("status.weatherPreviewFailed", "error", {error: err.message});
+      }
     }
 
     function answerAction(answer) {
@@ -4395,6 +4545,15 @@
       }
       mcpServers = Array.isArray(getPath(config, "mcps.servers")) ? getPath(config, "mcps.servers").map((server) => ({...server})) : [];
       renderMcpServers();
+      appsData = Array.isArray(getPath(config, "tools.applications"))
+        ? getPath(config, "tools.applications").map((app) => ({
+            name: String(app.name || ""),
+            command: String(app.command || ""),
+            aliases: Array.isArray(app.aliases) ? app.aliases.join(", ") : String(app.aliases || ""),
+            enabled: app.enabled !== false,
+          }))
+        : [];
+      renderApps();
       haAnswers = Array.isArray(getPath(config, "mcps.home_assistant.answers"))
         ? getPath(config, "mcps.home_assistant.answers").map((answer) => ({...answer}))
         : [];
@@ -4412,6 +4571,7 @@
       updateMeterUi(lastMeterRms);
       syncDevicesTabVisibility();
       syncModelVisibility();
+      syncWeatherVisibility();
     }
 
 
@@ -4451,6 +4611,15 @@
         setPath(config, "wake_word.model_names", [selectedWakeWord.replace(/^builtin:/, "")]);
         setPath(config, "wake_word.model_paths", []);
       }
+      setPath(config, "tools.applications", appsData.map((app) => ({
+        name: String(app.name || "").trim(),
+        command: String(app.command || "").trim(),
+        aliases: String(app.aliases || "")
+          .split(",")
+          .map((alias) => alias.trim())
+          .filter(Boolean),
+        enabled: app.enabled !== false,
+      })).filter((app) => app.name || app.command));
       setPath(config, "mcps.home_assistant.answers", haAnswers.map((answer) => ({
         id: String(answer.id || ""),
         language: String(answer.language || "en"),
@@ -4725,6 +4894,48 @@
       renderAnswers();
       setStatus("status.answersPending");
       notify("status.answerRemoved", "info");
+    });
+    weatherEnabled?.addEventListener("change", syncWeatherVisibility);
+    weatherTest?.addEventListener("click", previewWeather);
+    appsAdd?.addEventListener("click", addAppRow);
+    appsList?.addEventListener("input", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement)) return;
+      if (target.dataset.appName !== undefined) {
+        appsData[Number(target.dataset.appName)].name = target.value;
+      } else if (target.dataset.appCommand !== undefined) {
+        appsData[Number(target.dataset.appCommand)].command = target.value;
+      } else if (target.dataset.appAliases !== undefined) {
+        appsData[Number(target.dataset.appAliases)].aliases = target.value;
+      } else {
+        return;
+      }
+      setStatus("status.appsPending");
+    });
+    appsList?.addEventListener("change", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement) || target.dataset.appEnabled === undefined) return;
+      appsData[Number(target.dataset.appEnabled)].enabled = target.checked;
+      renderApps();
+      setStatus("status.appsPending");
+    });
+    appsList?.addEventListener("click", (event) => {
+      const browseButton = event.target.closest("[data-app-browse]");
+      if (browseButton) {
+        browseApp(Number(browseButton.dataset.appBrowse));
+        return;
+      }
+      const testButton = event.target.closest("[data-app-test]");
+      if (testButton) {
+        testApp(Number(testButton.dataset.appTest));
+        return;
+      }
+      const deleteButton = event.target.closest("[data-app-delete]");
+      if (!deleteButton) return;
+      appsData.splice(Number(deleteButton.dataset.appDelete), 1);
+      renderApps();
+      setStatus("status.appsPending");
+      notify("status.appRemoved", "info");
     });
     personaLibrarySelect.addEventListener("change", () => {
       renderPersonaLibrary();

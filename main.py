@@ -76,6 +76,8 @@ from core.security import (
     redact_for_log,
     request_has_valid_local_token,
 )
+from tools.applications import open_application, pick_application
+from tools.weather import get_weather
 from tools.home_assistant import (
     list_home_assistant_devices,
     refresh_home_assistant_devices_cache,
@@ -805,6 +807,21 @@ async def api_save_home_assistant_devices(payload: dict[str, Any]):
 async def api_refresh_home_assistant_devices(payload: dict[str, Any]):
     url = str(payload.get("url") or "") or None
     return await refresh_home_assistant_devices_cache(url)
+
+
+@app.post("/api/applications/open")
+async def api_open_application(payload: dict[str, Any]):
+    return await open_application(str(payload.get("name") or ""))
+
+
+@app.post("/api/applications/browse")
+async def api_browse_application():
+    return await pick_application()
+
+
+@app.post("/api/weather/preview")
+async def api_weather_preview(payload: dict[str, Any]):
+    return await get_weather(str(payload.get("location") or ""))
 
 
 if bitmon_mcp is not None:

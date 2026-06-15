@@ -33,7 +33,7 @@ from services.tool_runtime import (
     get_chat_tools,
     get_session_tools,
 )
-from services.voice_intents import try_direct_smart_home_intent
+from services.voice_intents import try_direct_open_app_intent, try_direct_smart_home_intent
 from services.wake_phrase import strip_configured_wake_phrase
 from services.whisper_service import transcribe_pcm16
 
@@ -145,11 +145,14 @@ async def chat_session_proxy(client_ws: WebSocket) -> None:
             history[0] = {"role": "system", "content": _system_prompt(config_now)}
             response_started = time.perf_counter()
             history.append({"role": "user", "content": user_text})
-            # Deterministic fast path: direct on/off commands matching an
-            # enabled Home Assistant device are executed without the LLM.
+            # Deterministic fast path: direct commands executed without the LLM.
+            # App-open ("abrir Photoshop") is checked first, then HA on/off; the
+            # "abrir/open" verb is shared, so a registered app wins over HA.
             direct_answer = None
             try:
-                direct_answer = await try_direct_smart_home_intent(user_text, config_now)
+                direct_answer = await try_direct_open_app_intent(user_text, config_now)
+                if direct_answer is None:
+                    direct_answer = await try_direct_smart_home_intent(user_text, config_now)
             except Exception as exc:
                 print(f"{flow_prefix} direct intent fallback error: {exc}")
             # Canned intent answers come from a small fixed set, so their TTS
