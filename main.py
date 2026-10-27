@@ -1,4 +1,4 @@
-"""BitMon backend server."""
+"""Kakarot backend server."""
 
 import asyncio
 import json
@@ -48,21 +48,41 @@ from persona.theme_config import (
     save_theme_config,
     save_theme_to_library,
 )
-from services.mcp_external import validate_home_assistant_mcp, validate_streamable_http_mcp
+from services.mcp_external import (
+    validate_home_assistant_mcp,
+    validate_streamable_http_mcp,
+)
 from services.sprite_optimizer import optimize_persona_sprites
-from services.chat_bus import broadcast_clear, clear_history, get_history, has_active_session, inject_text
-from services.chat_session import chat_session_proxy
+from services.chat_bus import (
+    broadcast_clear,
+    clear_history,
+    get_history,
+    has_active_session,
+    inject_text,
+)
 from services.llm_bridge import select_llm
 from services.input_capture import (
     cancel_hotkey_capture,
     get_hotkey_capture_result,
     start_hotkey_capture,
 )
-from services.local_catalog import list_kokoro_models, list_kokoro_voices, list_lmstudio_models
-from services.local_preload import preload_local_provider
-from services.local_session import local_session_proxy
-from services.tts_service import is_kokoro_ready
-from services.whisper_service import preload_configured_whisper
+from services.local_catalog import (
+    list_kokoro_models,
+    list_kokoro_voices,
+    list_lmstudio_models,
+)
+from services.runtime_state import (
+    locally_ready,
+    set_capability,
+    snapshot as capability_snapshot,
+)
+from services.memory_store import forget as forget_memory
+from services.memory_store import initialize as initialize_memory
+from services.memory_store import list_memories, remember, search as search_memory
+from services.reminders import cancel as cancel_reminder
+from services.reminders import create as create_reminder
+from services.reminders import list_reminders, run_scheduler
+from core.config import get_gemini_api_key
 from core.secret_store import SecretStoreError
 from core.security import (
     COOKIE_NAME,
@@ -75,6 +95,7 @@ from core.security import (
     mcp_enabled,
     redact_for_log,
     request_has_valid_local_token,
+    websocket_has_valid_local_token,
 )
 from tools.applications import open_application, pick_application
 from tools.weather import get_weather
@@ -87,7 +108,6 @@ from tools.home_assistant import (
 
 os.environ.setdefault("NO_COLOR", "1")
 
-_whisper_ready = False
 _last_error: str | None = None
 logging.getLogger("mcp").setLevel(logging.WARNING)
 logging.getLogger("mcp.server").setLevel(logging.WARNING)
@@ -98,7 +118,11 @@ LEGACY_NAME = "digi" + "mon"
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(f"BITMON_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
+    return (
+        os.environ.get(f"KAKAROT_{name}")
+        or os.environ.get(f"{LEGACY_NAME.upper()}_{name}")
+        or default
+    )
 
 
 WEB_CONFIG_PATH = BASE_DIR / "web" / "config.html"
@@ -124,15 +148,19 @@ def _setup_logging() -> None:
         encoding="utf-8",
     )
     handler.addFilter(RedactingLogFilter())
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
-    if not any(isinstance(existing, RotatingFileHandler) for existing in root_logger.handlers):
+    if not any(
+        isinstance(existing, RotatingFileHandler) for existing in root_logger.handlers
+    ):
         root_logger.addHandler(handler)
 
 
 _setup_logging()
-install_crash_logger("bitmon-backend", LOG_DIR, redact_for_log)
+install_crash_logger("kakarot-backend", LOG_DIR, redact_for_log)
 
 
 def _record_error(context: str, exc: object) -> None:
@@ -144,7 +172,9 @@ def _record_error(context: str, exc: object) -> None:
 def _available_locales() -> list[str]:
     if not WEB_I18N_DIR.exists():
         return [DEFAULT_LOCALE]
-    locales = sorted(path.stem for path in WEB_I18N_DIR.glob("*.json") if path.is_file())
+    locales = sorted(
+        path.stem for path in WEB_I18N_DIR.glob("*.json") if path.is_file()
+    )
     return locales or [DEFAULT_LOCALE]
 
 
@@ -160,50 +190,81 @@ def _read_locale_catalog(locale: str) -> dict[str, Any]:
 
 try:
     if not MCP_ENABLED:
-        raise RuntimeError("MCP HTTP mount disabled. Set BITMON_ENABLE_MCP=1 to enable it.")
-    from services.mcp_server import mcp as bitmon_mcp
+        raise RuntimeError(
+            "MCP HTTP mount disabled. Set KAKAROT_ENABLE_MCP=1 to enable it."
+        )
+    from services.mcp_server import mcp as kakarot_mcp
 except Exception as exc:
-    bitmon_mcp = None
+    kakarot_mcp = None
     logging.info("[MCP] unavailable: %s", redact_for_log(exc))
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global _whisper_ready
-
+    scheduler_stop = asyncio.Event()
     async def preload_after_startup() -> None:
-        global _whisper_ready
         await asyncio.sleep(0.5)
         config = get_config()
+        provider = str(
+            (config.get("llm") or {}).get("provider")
+            or config.get("provider")
+            or "inworld"
+        ).lower()
         try:
-            if str(config.get("provider") or "").lower() == "local":
+            if provider == "gemini":
+                configured = bool(get_gemini_api_key())
+                set_capability(
+                    "speech",
+                    "ready" if configured else "degraded",
+                    "" if configured else "Gemini API key is not configured",
+                )
+            elif provider == "local":
+                from services.local_preload import preload_local_provider
+
                 await preload_local_provider(config)
+                set_capability("speech", "ready")
             else:
+                from services.whisper_service import preload_configured_whisper
+
                 await preload_configured_whisper(config)
+                set_capability("speech", "ready")
         except Exception as exc:
             _record_error("[Preload] failed to load models", exc)
+            set_capability("speech", "degraded", redact_for_log(exc))
         finally:
-            _whisper_ready = True
+            try:
+                await asyncio.to_thread(initialize_memory)
+                set_capability("memory", "ready")
+            except Exception as exc:
+                _record_error("[Memory] failed to initialize", exc)
+                set_capability("memory", "degraded", redact_for_log(exc))
+            set_capability("backend", "ready")
 
     preload_task = asyncio.create_task(preload_after_startup())
-    if bitmon_mcp is None:
+    scheduler_task = asyncio.create_task(run_scheduler(scheduler_stop))
+    set_capability("notifications", "ready")
+    if kakarot_mcp is None:
         try:
             yield
         finally:
+            scheduler_stop.set()
+            await scheduler_task
             if not preload_task.done():
                 preload_task.cancel()
         return
     try:
-        async with bitmon_mcp.session_manager.run():
+        async with kakarot_mcp.session_manager.run():
             yield
     finally:
+        scheduler_stop.set()
+        await scheduler_task
         if not preload_task.done():
             preload_task.cancel()
 
 
 app = FastAPI(
-    title="BitMon AI Backend",
-    description="Voice proxy and BitMon configuration UI",
+    title="Kakarot AI Backend",
+    description="Voice proxy and Kakarot configuration UI",
     version="4.0.0",
     lifespan=lifespan,
     docs_url="/docs" if DOCS_ENABLED else None,
@@ -221,8 +282,13 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_local_token(request: Request, call_next):
-    if is_sensitive_api_path(request.url.path) and not request_has_valid_local_token(request):
-        return JSONResponse(status_code=401, content={"detail": "Invalid or missing BitMon local token."})
+    if is_sensitive_api_path(request.url.path) and not request_has_valid_local_token(
+        request
+    ):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing Kakarot local token."},
+        )
     return await call_next(request)
 
 
@@ -238,11 +304,15 @@ async def health():
 
 @app.get("/health/ready")
 async def health_ready():
-    """Return 200 only after the configured speech model has finished loading."""
+    """Return 200 once local services are ready; cloud credentials are reported separately."""
     from fastapi.responses import JSONResponse
-    if _whisper_ready:
-        return {"status": "ready"}
-    return JSONResponse(status_code=503, content={"status": "loading"})
+
+    capabilities = capability_snapshot()
+    if locally_ready():
+        return {"status": "ready", "capabilities": capabilities}
+    return JSONResponse(
+        status_code=503, content={"status": "loading", "capabilities": capabilities}
+    )
 
 
 @app.get("/api/status")
@@ -256,7 +326,9 @@ async def api_status():
     lm_studio_error = ""
     if provider == "local":
         try:
-            lm_result = await asyncio.to_thread(list_lmstudio_models, str(local_config.get("base_url") or ""))
+            lm_result = await asyncio.to_thread(
+                list_lmstudio_models, str(local_config.get("base_url") or "")
+            )
             lm_studio_connected = bool(lm_result.get("ok"))
         except Exception as exc:
             lm_studio_error = redact_for_log(exc)
@@ -274,11 +346,15 @@ async def api_status():
     return {
         "backend_online": True,
         "provider": provider,
-        "whisper_loaded": _whisper_ready,
-        "kokoro_ready": is_kokoro_ready(),
+        "capabilities": capability_snapshot(),
         "lm_studio_connected": lm_studio_connected,
         "lm_studio_error": lm_studio_error,
-        "inworld_api_key_configured": bool(config.get("secrets", {}).get("inworld_api_key_configured")),
+        "inworld_api_key_configured": bool(
+            config.get("secrets", {}).get("inworld_api_key_configured")
+        ),
+        "gemini_api_key_configured": bool(
+            config.get("secrets", {}).get("gemini_api_key_configured")
+        ),
         "home_assistant_mcp_connected": ha_connected,
         "home_assistant_error": redact_for_log(ha_error),
         "last_error": _last_error,
@@ -287,7 +363,9 @@ async def api_status():
 
 @app.get("/config")
 async def config_page():
-    response = HTMLResponse(inject_local_token(WEB_CONFIG_PATH.read_text(encoding="utf-8")))
+    response = HTMLResponse(
+        inject_local_token(WEB_CONFIG_PATH.read_text(encoding="utf-8"))
+    )
     response.set_cookie(
         COOKIE_NAME,
         value=get_local_token(),
@@ -345,7 +423,9 @@ async def api_i18n_catalog(locale: str):
     available = set(_available_locales())
     selected = locale if locale in available else DEFAULT_LOCALE
     catalog = _read_locale_catalog(selected)
-    fallback = _read_locale_catalog(DEFAULT_LOCALE) if selected != DEFAULT_LOCALE else {}
+    fallback = (
+        _read_locale_catalog(DEFAULT_LOCALE) if selected != DEFAULT_LOCALE else {}
+    )
     merged = {**fallback, **catalog}
     merged["_meta"] = {
         **(fallback.get("_meta") if isinstance(fallback.get("_meta"), dict) else {}),
@@ -369,6 +449,8 @@ async def api_save_config(config: dict[str, Any]):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     provider = str(saved.get("provider") or "inworld").lower()
     if provider == "local":
+        from services.local_preload import preload_local_provider
+
         async def preload_saved_local() -> None:
             try:
                 await preload_local_provider(saved)
@@ -376,9 +458,11 @@ async def api_save_config(config: dict[str, Any]):
                 _record_error("[Preload] failed to load Local", exc)
 
         asyncio.create_task(preload_saved_local())
-    else:
+    elif provider != "gemini":
         # Whisper is the STT for every cloud provider (inworld/openai/anthropic).
         async def preload_saved_whisper() -> None:
+            from services.whisper_service import preload_configured_whisper
+
             try:
                 await preload_configured_whisper(saved)
             except Exception as exc:
@@ -423,6 +507,75 @@ async def api_chat_clear():
     return {"ok": True, "messages": []}
 
 
+@app.get("/api/memory")
+async def api_list_memory(limit: int = 100):
+    return {"ok": True, "memories": await asyncio.to_thread(list_memories, limit=limit)}
+
+
+@app.get("/api/memory/search")
+async def api_search_memory(query: str, project: str = "", limit: int = 8):
+    try:
+        rows = await asyncio.to_thread(
+            search_memory, query, project=project, limit=limit, include_private=True
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "memories": rows}
+
+
+@app.post("/api/memory")
+async def api_remember(payload: dict[str, Any]):
+    try:
+        row = await asyncio.to_thread(
+            remember,
+            str(payload.get("text") or ""),
+            kind=str(payload.get("kind") or "fact"),
+            project=str(payload.get("project") or ""),
+            private=bool(payload.get("private", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "memory": row}
+
+
+@app.delete("/api/memory/{memory_id}")
+async def api_forget_memory(memory_id: int):
+    removed = await asyncio.to_thread(forget_memory, memory_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Memory not found.")
+    return {"ok": True, "memory_id": memory_id}
+
+
+@app.get("/api/reminders")
+async def api_list_reminders(include_completed: bool = False):
+    rows = await asyncio.to_thread(
+        list_reminders, include_completed=include_completed
+    )
+    return {"ok": True, "reminders": rows}
+
+
+@app.post("/api/reminders")
+async def api_create_reminder(payload: dict[str, Any]):
+    try:
+        row = await asyncio.to_thread(
+            create_reminder,
+            str(payload.get("message") or ""),
+            delay_seconds=float(payload.get("delay_seconds") or 0),
+            operation_id=str(payload.get("operation_id") or "") or None,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "reminder": row}
+
+
+@app.delete("/api/reminders/{reminder_id}")
+async def api_cancel_reminder(reminder_id: int):
+    removed = await asyncio.to_thread(cancel_reminder, reminder_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Active reminder not found.")
+    return {"ok": True, "reminder_id": reminder_id}
+
+
 @app.get("/api/persona/config")
 async def api_get_persona_config():
     return get_persona_config()
@@ -457,7 +610,9 @@ async def api_theme_library():
 @app.post("/api/theme/library")
 async def api_save_theme_to_library(payload: dict[str, Any]):
     try:
-        return save_theme_to_library(str(payload.get("name") or ""), payload.get("theme") or {})
+        return save_theme_to_library(
+            str(payload.get("name") or ""), payload.get("theme") or {}
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -502,7 +657,9 @@ async def api_delete_persona_asset(payload: dict[str, Any]):
 @app.post("/api/persona/assets/rename")
 async def api_rename_persona_asset(payload: dict[str, Any]):
     try:
-        return rename_persona_asset(str(payload.get("name") or ""), str(payload.get("new_name") or ""))
+        return rename_persona_asset(
+            str(payload.get("name") or ""), str(payload.get("new_name") or "")
+        )
     except ValueError as exc:
         status = 404 if "not found" in str(exc).lower() else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -516,7 +673,9 @@ async def api_persona_library():
 @app.post("/api/persona")
 async def api_create_persona(payload: dict[str, Any]):
     try:
-        return create_persona(str(payload.get("name") or ""), str(payload.get("source_id") or "") or None)
+        return create_persona(
+            str(payload.get("name") or ""), str(payload.get("source_id") or "") or None
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -598,7 +757,9 @@ async def api_export_persona(persona_id: str | None = None):
         zip_path,
         media_type="application/zip",
         filename=filename,
-        background=BackgroundTask(lambda path: Path(path).unlink(missing_ok=True), zip_path),
+        background=BackgroundTask(
+            lambda path: Path(path).unlink(missing_ok=True), zip_path
+        ),
     )
 
 
@@ -671,7 +832,11 @@ async def api_start_mcp_oauth(payload: dict[str, Any], request: Request):
     try:
         await asyncio.wait_for(flow["event"].wait(), timeout=20)
     except asyncio.TimeoutError:
-        return {"ok": False, "flow_id": flow_id, "error": "OAuth authorization URL was not returned."}
+        return {
+            "ok": False,
+            "flow_id": flow_id,
+            "error": "OAuth authorization URL was not returned.",
+        }
 
     if flow.get("result"):
         return {"ok": True, "flow_id": flow_id, "connected": True, **flow["result"]}
@@ -689,14 +854,21 @@ async def api_mcp_oauth_status(flow_id: str):
         return {"ok": True, "flow_id": flow_id, "connected": True, **flow["result"]}
     if flow.get("error"):
         return {"ok": False, "flow_id": flow_id, "error": flow["error"]}
-    return {"ok": True, "flow_id": flow_id, "pending": True, "auth_url": flow.get("auth_url", "")}
+    return {
+        "ok": True,
+        "flow_id": flow_id,
+        "pending": True,
+        "auth_url": flow.get("auth_url", ""),
+    }
 
 
 @app.get("/api/mcps/oauth/callback/{flow_id}", name="api_mcp_oauth_callback")
 async def api_mcp_oauth_callback(flow_id: str, request: Request):
     flow = MCP_OAUTH_FLOWS.get(flow_id)
     if not flow:
-        return HTMLResponse("<h1>BitMon MCP OAuth</h1><p>OAuth flow not found.</p>", status_code=404)
+        return HTMLResponse(
+            "<h1>Kakarot MCP OAuth</h1><p>OAuth flow not found.</p>", status_code=404
+        )
     callback = flow.get("callback")
     error = request.query_params.get("error")
     code = request.query_params.get("code")
@@ -707,9 +879,11 @@ async def api_mcp_oauth_callback(flow_id: str, request: Request):
         elif code:
             callback.set_result((code, state))
         else:
-            callback.set_exception(RuntimeError("OAuth callback did not include a code."))
+            callback.set_exception(
+                RuntimeError("OAuth callback did not include a code.")
+            )
     return HTMLResponse(
-        "<h1>BitMon MCP OAuth</h1><p>Authorization received. You can close this tab and return to BitMon.</p>"
+        "<h1>Kakarot MCP OAuth</h1><p>Authorization received. You can close this tab and return to Kakarot.</p>"
     )
 
 
@@ -725,7 +899,9 @@ async def api_local_kokoro_models():
 
 @app.post("/api/local/lmstudio/models")
 async def api_local_lmstudio_models(payload: dict[str, Any]):
-    base_url = str(payload.get("base_url") or get_config().get("local", {}).get("base_url") or "")
+    base_url = str(
+        payload.get("base_url") or get_config().get("local", {}).get("base_url") or ""
+    )
     try:
         return await asyncio.to_thread(list_lmstudio_models, base_url)
     except Exception as exc:
@@ -755,12 +931,14 @@ async def api_wake_word_models():
         from openwakeword import MODELS
 
         for name in sorted(MODELS):
-            builtins.append({
-                "value": f"builtin:{name}",
-                "label": name.replace("_", " ").title(),
-                "type": "builtin",
-                "model_name": name,
-            })
+            builtins.append(
+                {
+                    "value": f"builtin:{name}",
+                    "label": name.replace("_", " ").title(),
+                    "type": "builtin",
+                    "model_name": name,
+                }
+            )
     except Exception:
         builtins = []
 
@@ -775,7 +953,9 @@ async def api_wake_word_models():
         tflite_ok = False
 
     files = []
-    model_paths = list(WAKEWORD_DIR.glob("*.onnx")) + list(WAKEWORD_DIR.glob("*.tflite"))
+    model_paths = list(WAKEWORD_DIR.glob("*.onnx")) + list(
+        WAKEWORD_DIR.glob("*.tflite")
+    )
     for path in sorted(model_paths, key=lambda item: item.name.lower()):
         entry = {
             "value": f"file:{path.name}",
@@ -824,31 +1004,47 @@ async def api_weather_preview(payload: dict[str, Any]):
     return await get_weather(str(payload.get("location") or ""))
 
 
-if bitmon_mcp is not None:
-    app.mount("/mcp", bitmon_mcp.streamable_http_app())
+if kakarot_mcp is not None:
+    app.mount("/mcp", kakarot_mcp.streamable_http_app())
 
-app.mount("/persona/assets", StaticFiles(directory=PERSONA_ASSETS_DIR), name="persona_assets")
-app.mount("/persona/fonts", StaticFiles(directory=PERSONA_FONTS_DIR), name="persona_fonts")
-app.mount("/persona/icons", StaticFiles(directory=PERSONA_ICONS_DIR), name="persona_icons")
+app.mount(
+    "/persona/assets", StaticFiles(directory=PERSONA_ASSETS_DIR), name="persona_assets"
+)
+app.mount(
+    "/persona/fonts", StaticFiles(directory=PERSONA_FONTS_DIR), name="persona_fonts"
+)
+app.mount(
+    "/persona/icons", StaticFiles(directory=PERSONA_ICONS_DIR), name="persona_icons"
+)
 app.mount("/vendor", StaticFiles(directory=WEB_VENDOR_DIR), name="web_vendor")
 
 
 @app.websocket("/session")
 async def session(ws: WebSocket):
-    """Bidirectional voice session used by the persona client."""
-    voice = ws.query_params.get("voice") or None
-    prompt = ws.query_params.get("prompt") or None
-    model = ws.query_params.get("model") or None
-    name = ws.query_params.get("name") or None
-    config = get_config()
-    selection = select_llm(config)
-    tts = config.get("tts") or {}
-    tts_provider = str(tts.get("provider") or "inworld").lower() if bool(tts.get("enabled", True)) else "off"
-    print(f"[VoiceFlow] mode=normal stt=whisper llm={selection.label} tts={tts_provider}")
-    if selection.provider == "local":
-        await local_session_proxy(ws, voice=voice, prompt=prompt, model=model, name=name)
-    else:
-        await chat_session_proxy(ws)
+    """Quarantined legacy WebSocket bridge.
+
+    The active voice path is :mod:`kakarot_daemon.live`, which uses unary Gemini
+    REST calls. This route must never reach ``gemini_session.gemini_session_proxy``
+    or ``client.aio.live.connect`` again.
+    """
+    if not websocket_has_valid_local_token(ws):
+        await ws.close(code=1008, reason="Unauthorized")
+        return
+    await ws.accept()
+    await ws.send_text(
+        json.dumps(
+            {
+                "type": "error",
+                "code": "legacy_session_disabled",
+                "error": (
+                    "The legacy /session WebSocket transport is disabled. "
+                    "Use the kakarot-core daemon through D-Bus or its local "
+                    "UNIX control socket."
+                ),
+            }
+        )
+    )
+    await ws.close(code=1008, reason="legacy /session disabled")
 
 
 if __name__ == "__main__":

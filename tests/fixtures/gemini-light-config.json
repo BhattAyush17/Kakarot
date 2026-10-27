@@ -1,0 +1,19 @@
+{
+  "config_version": 3,
+  "provider": "gemini",
+  "llm": {
+    "provider": "gemini"
+  },
+  "gemini": {
+    "live_model": "gemini-3.8-live",
+    "document_model": "gemini-3.8-flash",
+    "voice": "Kore",
+    "max_tokens": 300
+  },
+  "runtime": {
+    "profile": "lightweight",
+    "soft_memory_mb": 400,
+    "critical_memory_mb": 450,
+    "hard_memory_mb": 500
+  }
+}
