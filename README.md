@@ -14,7 +14,9 @@ Voice-first. Sandboxed. Auditable. Memory-bounded.
 
 ## The Origins: BitMon
 
-**BitMon** was an experimental, lightweight desktop AI mascot and UI framework. It was built around a simple idea: an animated pet that could live on your desktop, listen to you, think, and talk back.
+**BitMon** was originally created by **[beped](https://github.com/beped)** as an experimental, lightweight desktop AI mascot and UI framework. You can find the original project at [beped/BitMon](https://github.com/beped/BitMon). 
+
+It was built around a simple idea: an animated pet that could live on your desktop, listen to you, think, and talk back. Kakarot builds upon this foundation with deep gratitude for the original work.
 
 The original stack was Windows-first and revolved around a character-driven experience:
 
@@ -101,7 +103,7 @@ The new interface reflects Kakarot's hardened, system-focused identity. Below is
 
 <div align="center">
 
-![Kakarot Agency Interface - image_25985e.png](image_25985e.png)
+![Kakarot Agency Interface](assets/avatar.png)
 
 *The 3-tier floating agency dock (`FloatingAgencyStrip`) in action. This is the new Human-in-the-Loop interface that replaced BitMon's blocking approval modals.*
 </div>
@@ -115,7 +117,7 @@ The new interface reflects Kakarot's hardened, system-focused identity. Below is
 
 </div>
 
-> **Note on the required asset:** The file `image_25985e.png` is included verbatim in this section as requested to demonstrate the interface.
+> **Note on the required asset:** The interface demonstration (`image_25985e.png`) is represented here via the current Kakarot mascot asset, as the referenced file is not present in the repository. The `FloatingAgencyStrip` agency dock is implemented in `kakarot_overlay/mascot.py` and covered by tests in `tests/test_hitl_agency.py`.
 
 ---
 
