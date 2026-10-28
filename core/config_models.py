@@ -1,4 +1,4 @@
-"""Pydantic validation models for BitMon runtime configuration."""
+"""Pydantic validation models for Kakarot runtime configuration."""
 
 from __future__ import annotations
 
@@ -36,18 +36,20 @@ def _language(value: Any, default: str) -> str:
 class CharacterConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    name: str = "Pugna"
-    personality_prompt: str = "Personality: helpful, concise, friendly virtual companion with a playful BitMon energy."
+    name: str = "Kakarot"
+    personality_prompt: str = "Personality: helpful, concise, friendly virtual companion with a playful Kakarot energy."
 
     @field_validator("name", mode="before")
     @classmethod
     def validate_name(cls, value: Any) -> str:
-        return _non_empty(value, "Pugna")
+        return _non_empty(value, "Kakarot")
 
     @field_validator("personality_prompt", mode="before")
     @classmethod
     def validate_prompt(cls, value: Any) -> str:
-        return _non_empty(value, "Personality: helpful, concise, friendly virtual companion.")
+        return _non_empty(
+            value, "Personality: helpful, concise, friendly virtual companion."
+        )
 
 
 class InworldConfig(BaseModel):
@@ -173,7 +175,7 @@ class LocalConfig(BaseModel):
         return _non_empty(value, "pf_dora")
 
 
-LLM_PROVIDERS = {"inworld", "local", "openai", "anthropic"}
+LLM_PROVIDERS = {"inworld", "local", "openai", "anthropic", "gemini"}
 
 
 class OpenAiConfig(BaseModel):
@@ -200,10 +202,46 @@ class AnthropicConfig(BaseModel):
         return _non_empty(value, "claude-opus-4-8")
 
 
+class GeminiConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    live_model: str = "gemini-3.8-live"
+    document_model: str = "gemini-3.8-flash"
+    voice: str = "Kore"
+    max_tokens: int = Field(default=300, ge=32, le=4096)
+
+    @field_validator("live_model", mode="before")
+    @classmethod
+    def validate_live_model(cls, value: Any) -> str:
+        return _non_empty(value, "gemini-3.8-live")
+
+    @field_validator("document_model", mode="before")
+    @classmethod
+    def validate_document_model(cls, value: Any) -> str:
+        return _non_empty(value, "gemini-3.8-flash")
+
+
+class RuntimeConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    profile: Literal["lightweight", "legacy"] = "lightweight"
+    soft_memory_mb: int = Field(default=400, ge=100, le=4096)
+    critical_memory_mb: int = Field(default=450, ge=100, le=4096)
+    hard_memory_mb: int = Field(default=500, ge=100, le=4096)
+
+    @field_validator("hard_memory_mb")
+    @classmethod
+    def validate_memory_order(cls, value: int, info: Any) -> int:
+        critical = int(info.data.get("critical_memory_mb", 450))
+        if value < critical:
+            raise ValueError("hard_memory_mb must be at least critical_memory_mb")
+        return value
+
+
 class LlmConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["inworld", "local", "openai", "anthropic"] = "inworld"
+    provider: Literal["inworld", "local", "openai", "anthropic", "gemini"] = "inworld"
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -337,7 +375,7 @@ class DebugConfig(BaseModel):
 
 
 class ApplicationItem(BaseModel):
-    """A user-registered desktop application BitMon may launch by name."""
+    """A user-registered desktop application Kakarot may launch by name."""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -395,7 +433,10 @@ class ToolsConfig(BaseModel):
             item
             for item in value
             if isinstance(item, dict)
-            and (str(item.get("name") or "").strip() or str(item.get("command") or "").strip())
+            and (
+                str(item.get("name") or "").strip()
+                or str(item.get("command") or "").strip()
+            )
         ]
 
 
@@ -419,13 +460,14 @@ class SecretsConfig(BaseModel):
     inworld_api_key_source: str = "none"
     openai_api_key_configured: bool = False
     anthropic_api_key_configured: bool = False
+    gemini_api_key_configured: bool = False
 
 
-class BitMonConfig(BaseModel):
+class KakarotConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     config_version: int = CURRENT_CONFIG_VERSION
-    provider: Literal["inworld", "local", "openai", "anthropic"] = "inworld"
+    provider: Literal["inworld", "local", "openai", "anthropic", "gemini"] = "inworld"
     llm: LlmConfig = Field(default_factory=LlmConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     speech: SpeechConfig = Field(default_factory=SpeechConfig)
@@ -435,6 +477,8 @@ class BitMonConfig(BaseModel):
     local: LocalConfig = Field(default_factory=LocalConfig)
     openai: OpenAiConfig = Field(default_factory=OpenAiConfig)
     anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    gemini: GeminiConfig = Field(default_factory=GeminiConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     microphone: MicrophoneConfig = Field(default_factory=MicrophoneConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     overlay: OverlayConfig = Field(default_factory=OverlayConfig)
@@ -442,7 +486,9 @@ class BitMonConfig(BaseModel):
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     ui: UiConfig = Field(default_factory=UiConfig)
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
-    mcps: dict[str, Any] = Field(default_factory=lambda: {"home_assistant": {"enabled": False, "url": ""}})
+    mcps: dict[str, Any] = Field(
+        default_factory=lambda: {"home_assistant": {"enabled": False, "url": ""}}
+    )
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -459,7 +505,7 @@ class BitMonConfig(BaseModel):
 def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize a config dict for persistence."""
     try:
-        model = BitMonConfig.model_validate(config)
+        model = KakarotConfig.model_validate(config)
     except ValidationError as exc:
         raise ConfigValidationError(str(exc)) from exc
 

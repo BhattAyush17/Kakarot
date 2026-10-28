@@ -1,4 +1,4 @@
-"""Crash logging helpers for BitMon processes."""
+"""Crash logging helpers for Kakarot processes."""
 
 from __future__ import annotations
 

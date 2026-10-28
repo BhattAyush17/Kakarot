@@ -1,4 +1,4 @@
-"""Local security and redaction helpers for the BitMon backend."""
+"""Local security and redaction helpers for the Kakarot backend."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import secrets
 from pathlib import Path
 
 from fastapi import Request
+from fastapi import WebSocket
 
 
-HEADER_NAME = "X-BitMon-Token"
-COOKIE_NAME = "bitmon_token"
+HEADER_NAME = "X-Kakarot-Token"
+COOKIE_NAME = "kakarot_token"
 LOCAL_TOKEN_PATH = Path(__file__).resolve().parent.parent / ".local_token"
 LEGACY_NAME = "digi" + "mon"
 
@@ -22,20 +23,24 @@ SENSITIVE_PREFIXES = (
     "/api/runtime/",
     "/api/mcps/",
     "/api/home-assistant/",
+    "/api/memory",
+    "/api/reminders",
 )
 
 _AUTH_HEADER_RE = re.compile(
     r"(?i)(authorization\s*[:=]\s*)(bearer|basic)?\s*[A-Za-z0-9._~+/=-]{8,}"
 )
-_TOKEN_QUERY_RE = re.compile(r"(?i)([?&](?:token|api_key|key|secret|access_token)=)[^&\s]+")
+_TOKEN_QUERY_RE = re.compile(
+    r"(?i)([?&](?:token|api_key|key|secret|access_token)=)[^&\s]+"
+)
 _PRIVATE_URL_RE = re.compile(r"(?i)(https?://[^\s\"']*private_[^\s\"']*)")
 _API_KEY_RE = re.compile(r"(?i)\b(?:sk|rk|pk|inworld)[-_A-Za-z0-9]{16,}\b")
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
-    if value is None and name.startswith("BITMON_"):
-        value = os.environ.get(f"{LEGACY_NAME.upper()}_{name.removeprefix('BITMON_')}")
+    if value is None and name.startswith("KAKAROT_"):
+        value = os.environ.get(f"{LEGACY_NAME.upper()}_{name.removeprefix('KAKAROT_')}")
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
@@ -63,13 +68,25 @@ def is_sensitive_api_path(path: str) -> bool:
     """Return whether a route must require the local token."""
     if path.startswith("/api/mcps/oauth/callback/"):
         return False
-    return path in SENSITIVE_EXACT_PATHS or any(path.startswith(prefix) for prefix in SENSITIVE_PREFIXES)
+    return path in SENSITIVE_EXACT_PATHS or any(
+        path.startswith(prefix) for prefix in SENSITIVE_PREFIXES
+    )
 
 
 def request_has_valid_local_token(request: Request) -> bool:
     """Validate a token supplied by header or cookie."""
     expected = get_local_token()
-    supplied = request.headers.get(HEADER_NAME) or request.cookies.get(COOKIE_NAME) or ""
+    supplied = (
+        request.headers.get(HEADER_NAME) or request.cookies.get(COOKIE_NAME) or ""
+    )
+    return secrets.compare_digest(supplied, expected)
+
+
+def websocket_has_valid_local_token(websocket: WebSocket) -> bool:
+    expected = get_local_token()
+    supplied = (
+        websocket.headers.get(HEADER_NAME) or websocket.query_params.get("token") or ""
+    )
     return secrets.compare_digest(supplied, expected)
 
 
@@ -77,8 +94,8 @@ def inject_local_token(html: str) -> str:
     """Inject the local token into the config page served by the backend."""
     snippet = (
         "<script>"
-        f"window.BITMON_LOCAL_TOKEN = {json.dumps(get_local_token())};"
-        f"window.BITMON_TOKEN_HEADER = {json.dumps(HEADER_NAME)};"
+        f"window.KAKAROT_LOCAL_TOKEN = {json.dumps(get_local_token())};"
+        f"window.KAKAROT_TOKEN_HEADER = {json.dumps(HEADER_NAME)};"
         "</script>"
     )
     if "</head>" in html:
@@ -87,15 +104,19 @@ def inject_local_token(html: str) -> str:
 
 
 def docs_enabled() -> bool:
-    return _bool_env("BITMON_ENABLE_DOCS", False)
+    return _bool_env("KAKAROT_ENABLE_DOCS", False)
 
 
 def mcp_enabled() -> bool:
-    return _bool_env("BITMON_ENABLE_MCP", False)
+    return _bool_env("KAKAROT_ENABLE_MCP", False)
 
 
 def allowed_cors_origins() -> list[str]:
-    raw = os.environ.get("BITMON_ALLOWED_ORIGINS") or os.environ.get(f"{LEGACY_NAME.upper()}_ALLOWED_ORIGINS") or ""
+    raw = (
+        os.environ.get("KAKAROT_ALLOWED_ORIGINS")
+        or os.environ.get(f"{LEGACY_NAME.upper()}_ALLOWED_ORIGINS")
+        or ""
+    )
     origins = [item.strip() for item in raw.split(",") if item.strip()]
     if origins:
         return origins

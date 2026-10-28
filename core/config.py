@@ -1,4 +1,4 @@
-"""Centralized BitMon backend settings.
+"""Centralized Kakarot backend settings.
 
 These are in-code defaults (the runtime values live in the config UI / keyring).
 No ``.env`` file is read; the legacy dotenv support was removed."""
@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from core.secret_store import (
     ANTHROPIC_API_KEY_SECRET,
+    GEMINI_API_KEY_SECRET,
     INWORLD_API_KEY_SECRET,
     OPENAI_API_KEY_SECRET,
     get_secret,
@@ -31,13 +32,13 @@ class Settings(BaseSettings):
     )
 
     # --- Inworld APIs ---
-    INWORLD_VOICE: str = "Sarah"       # TTS voice (Sarah, etc.)
+    INWORLD_VOICE: str = "Sarah"  # TTS voice (Sarah, etc.)
     INWORLD_ROUTER_BASE_URL: str = "https://api.inworld.ai/v1"
     INWORLD_ROUTER_VISION_MODEL: str = "openai/gpt-4o-mini"
 
     # --- Kokoro TTS ---
-    KOKORO_LANG: str = "p"               # 'p' = Portuguese (pt-BR)
-    KOKORO_VOICE: str = "pf_dora"        # Default pt-BR voice; change from the UI if needed
+    KOKORO_LANG: str = "p"  # 'p' = Portuguese (pt-BR)
+    KOKORO_VOICE: str = "pf_dora"  # Default pt-BR voice; change from the UI if needed
     KOKORO_SPEED: float = 1.0
 
 
@@ -93,3 +94,16 @@ def set_anthropic_api_key(api_key: str) -> None:
 
 def is_anthropic_api_key_configured() -> bool:
     return bool(get_anthropic_api_key())
+
+
+def get_gemini_api_key() -> str:
+    """Return the Gemini API key from the OS credential store."""
+    return get_secret(GEMINI_API_KEY_SECRET)
+
+
+def set_gemini_api_key(api_key: str) -> None:
+    set_secret(GEMINI_API_KEY_SECRET, api_key)
+
+
+def is_gemini_api_key_configured() -> bool:
+    return bool(get_gemini_api_key())
