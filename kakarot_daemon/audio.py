@@ -251,6 +251,10 @@ class AudioBridge:
     def sleep_microphone(self) -> None:
         """Stop inference and release the capture device while the UI is closed."""
         self._muted = True
+        # This is an external mute for an in-flight answer.  Increment the
+        # epoch so ``KakarotLiveService.speak`` cannot re-open the microphone
+        # in its follow-up restore after the UI has gone away.
+        self._mute_epoch += 1
         stream, self._input_stream = self._input_stream, None
         if stream is not None:
             self._close_stream(stream)
