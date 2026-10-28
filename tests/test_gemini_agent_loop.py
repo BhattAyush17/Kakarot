@@ -37,11 +37,46 @@ class _FakeResponse:
 
     function_calls: ClassVar[list[Any]] = [_FakeCall()]
     text = None
+    usage_metadata = SimpleNamespace(
+        prompt_token_count=100,
+        candidates_token_count=10,
+        thoughts_token_count=2,
+        tool_use_prompt_token_count=5,
+        total_token_count=117,
+    )
 
     def __init__(self) -> None:
         self.candidates = [
             SimpleNamespace(content=_FakeModelContent()),
         ]
+
+
+class _AnswerResponse:
+    function_calls: ClassVar[list[Any]] = []
+    text = "Hello."
+    usage_metadata = SimpleNamespace(
+        prompt_token_count=80,
+        candidates_token_count=4,
+        total_token_count=84,
+    )
+
+    def __init__(self) -> None:
+        self.candidates = [
+            SimpleNamespace(
+                content=SimpleNamespace(
+                    role="model", parts=[types.Part(text=self.text)]
+                )
+            ),
+        ]
+
+
+class _AnswerModels:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def generate_content(self, **_: Any) -> _AnswerResponse:
+        self.calls += 1
+        return _AnswerResponse()
 
 
 class _Models:
@@ -126,6 +161,36 @@ def test_tool_chain_keeps_the_user_request_in_history() -> None:
             assert call.parts[0].function_call is not None
             assert response.role == "user"
             assert response.parts[0].function_response is not None
+
+        usage = service.last_turn_usage
+        assert usage["turns"] == 1
+        assert usage["requests"] == MAX_TOOL_ROUNDS
+        assert usage["successful_requests"] == MAX_TOOL_ROUNDS
+        assert usage["prompt_tokens"] == 100 * MAX_TOOL_ROUNDS
+        assert usage["total_tokens"] == 117 * MAX_TOOL_ROUNDS
+
+    asyncio.run(scenario())
+
+
+def test_one_user_ask_reports_its_model_requests_and_tokens() -> None:
+    async def scenario() -> None:
+        service = _service()
+        models = _AnswerModels()
+        service._client = SimpleNamespace(models=models)
+        service._types = types
+        service._tool_config = None
+
+        answer = await service.agent_loop(_user("say hello"))
+        await service.agent_loop(_user("say hello again"))
+
+        assert answer == "Hello."
+        assert models.calls == 2
+        # The last turn is one request; the session total covers both asks.
+        assert service.last_turn_usage["requests"] == 1
+        assert service.last_turn_usage["total_tokens"] == 84
+        assert service.session_usage["turns"] == 2
+        assert service.session_usage["requests"] == 2
+        assert service.session_usage["total_tokens"] == 168
 
     asyncio.run(scenario())
 

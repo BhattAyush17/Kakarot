@@ -12,6 +12,7 @@ import math
 import struct
 from collections import deque
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -42,6 +43,7 @@ class FakeAudio:
         self.wake_word_active = False
         self.audio_available = True
         self.barge_in_active = False
+        self.mute_epoch = 0
         self.events: list[tuple] = []
         self.output = bytearray()
         self.monitor_armed = False
@@ -59,7 +61,14 @@ class FakeAudio:
 
     def set_muted(self, muted: bool, *, preserve_input: bool = False) -> None:
         self.muted = bool(muted)
+        if muted:
+            self.mute_epoch += 1
         self.events.append(("muted", self.muted))
+
+    def sleep_microphone(self) -> None:
+        self.muted = True
+        self.audio_available = False
+        self.events.append(("sleep_mic",))
 
     def reset_barge_in(self) -> None:
         self.events.append(("reset_barge_in",))
@@ -116,6 +125,77 @@ def test_generate_content_config_enforces_spoken_english() -> None:
     assert "NO line breaks" in config.system_instruction
     assert "MANDATORY LANGUAGE" in config.system_instruction
     assert "Answer only in English (en)" in config.system_instruction
+
+
+def test_rolling_summary_is_appended_to_the_system_instruction() -> None:
+    instruction = _build_system_instruction(
+        {"name": "Kakarot"},
+        {"stt_language": "en"},
+        "The user fixed the audio path and prefers concise answers.",
+    )
+
+    assert instruction.endswith(
+        "Prior Context: The user fixed the audio path and prefers concise answers."
+    )
+
+
+def test_desktop_telemetry_is_appended_to_the_system_instruction() -> None:
+    instruction = _build_system_instruction(
+        {"name": "Kakarot"},
+        {"stt_language": "en"},
+        "The user is working on the voice pipeline.",
+        "Volume 40%, Dark Mode active, Wi-Fi connected to HomeNetwork",
+    )
+
+    assert "Prior Context: The user is working on the voice pipeline." in instruction
+    assert (
+        "Current State: Volume 40%, Dark Mode active, "
+        "Wi-Fi connected to HomeNetwork"
+    ) in instruction
+
+
+def test_desktop_telemetry_uses_fast_bounded_probes() -> None:
+    def fake_run(argv, **_kwargs):
+        if argv[0] == "wpctl":
+            return SimpleNamespace(stdout="Volume: 0.40 [MUTED]\n")
+        if argv[0] == "gsettings":
+            return SimpleNamespace(stdout="'prefer-dark'\n")
+        if argv[0] == "nmcli":
+            return SimpleNamespace(stdout="yes:HomeNetwork\nno:Guest\n")
+        raise AssertionError(argv)
+
+    with patch.object(live_module.subprocess, "run", side_effect=fake_run) as run:
+        telemetry = live_module._collect_desktop_telemetry()
+
+    assert telemetry == (
+        "Volume 40% (muted), Dark Mode active, Wi-Fi connected to HomeNetwork"
+    )
+    assert {call.kwargs["timeout"] for call in run.call_args_list} == {
+        live_module.DESKTOP_TELEMETRY_TIMEOUT_SECONDS
+    }
+    assert run.call_args_list[2].args[0] == [
+        "nmcli",
+        "-t",
+        "-f",
+        "active,ssid",
+        "dev",
+        "wifi",
+    ]
+
+
+def test_desktop_telemetry_is_cached_briefly() -> None:
+    service = _service(FakeAudio())
+
+    with patch.object(
+        live_module,
+        "_collect_desktop_telemetry",
+        return_value="Volume 40%, Dark Mode active",
+    ) as collect:
+        first = service._get_desktop_telemetry()
+        second = service._get_desktop_telemetry()
+
+    assert first == second == "Volume 40%, Dark Mode active"
+    assert collect.call_count == 1
 
 
 def test_local_endpointing_ends_on_trailing_silence() -> None:
@@ -196,6 +276,71 @@ def test_speak_keeps_the_microphone_closed_during_playback(
     assert ("muted", False) not in audio.events[:queue_index]
 
 
+def test_speak_caps_tts_text_at_one_thousand_characters() -> None:
+    audio = FakeAudio()
+    service = _service(audio)
+    service._tts_models = ("test-tts",)
+    captured: list[str] = []
+
+    async def fake_synthesize(text: str) -> bytes:
+        captured.append(text)
+        return _frame(0.1) * 2
+
+    service._synthesize_speech = fake_synthesize
+    asyncio.run(service.speak("x" * 1500))
+
+    assert captured == ["x" * 1000 + live_module.TTS_TRUNCATION_MARKER]
+
+
+def test_manual_mute_discards_an_in_progress_utterance() -> None:
+    audio = FakeAudio([_frame(0.1)] * 200)
+    service = _service(audio)
+
+    async def run() -> bytes:
+        task = asyncio.create_task(service._capture_voice_turn())
+        await asyncio.sleep(0.05)
+        audio.set_muted(True)
+        return await asyncio.wait_for(task, timeout=1.0)
+
+    assert asyncio.run(run()) == b""
+
+
+def test_unmute_during_playback_cancels_a_temporary_pause() -> None:
+    audio = FakeAudio()
+    service = _service(audio, follow_up_listening=True)
+    service._types = types
+
+    async def fake_synthesize(_text: str) -> bytes:
+        audio.set_muted(True)
+        audio.set_muted(False)
+        return _frame(0.1) * 2
+
+    service._synthesize_speech = fake_synthesize
+    with patch.object(live_module, "PLAYBACK_TAIL_SECONDS", 0.0):
+        asyncio.run(service.speak("Answer after a temporary pause."))
+
+    assert audio.muted is False
+    assert audio.events[-1] == ("muted", False)
+
+
+def test_sleep_during_playback_keeps_the_microphone_shut() -> None:
+    audio = FakeAudio()
+    service = _service(audio, follow_up_listening=True)
+    service._types = types
+
+    async def fake_synthesize(_text: str) -> bytes:
+        audio.sleep_microphone()
+        return _frame(0.1) * 2
+
+    service._synthesize_speech = fake_synthesize
+    with patch.object(live_module, "PLAYBACK_TAIL_SECONDS", 0.0):
+        asyncio.run(service.speak("This answer should not reopen the mic."))
+
+    assert audio.audio_available is False
+    assert audio.muted is True
+    assert ("muted", False) not in audio.events
+
+
 def test_submit_content_does_not_reopen_the_microphone() -> None:
     """The answer path owns the gate; the turn wrapper must not unmute it."""
     audio = FakeAudio()
@@ -254,6 +399,72 @@ def test_generate_moves_to_fallback_when_primary_hangs() -> None:
     assert second == "answer from fallback-model"
 
 
+def test_generate_falls_back_after_timeout_with_a_fresh_six_second_budget() -> None:
+    """A primary timeout must not consume the fallback's attempt budget."""
+    service = _service(FakeAudio())
+    service._fallback_models = ("fallback-model",)
+    calls: list[str] = []
+    budgets: list[float] = []
+    expected = SimpleNamespace(usage_metadata=None)
+
+    class Models:
+        async def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == "test-model":
+                raise TimeoutError("primary timed out")
+            return expected
+
+    service._client = SimpleNamespace(models=Models())
+    real_wait_for = asyncio.wait_for
+
+    async def record_wait_for(awaitable, *, timeout):
+        budgets.append(timeout)
+        return await real_wait_for(awaitable, timeout=timeout)
+
+    with patch.object(live_module.asyncio, "wait_for", side_effect=record_wait_for):
+        answer = asyncio.run(service._generate([], None))
+
+    assert answer is expected
+    assert calls == ["test-model", "fallback-model"]
+    assert budgets == [6.0, 6.0]
+
+
+def test_submit_content_returns_the_fallback_answer_after_primary_timeout() -> None:
+    """The full voice entry point must survive a TimeoutError from the primary."""
+    service = _service(FakeAudio())
+    service._fallback_models = ("fallback-model",)
+    service._initialized.set()
+    service._types = types
+    calls: list[str] = []
+    expected = SimpleNamespace(
+        function_calls=None,
+        text="fallback answer",
+        candidates=[],
+        usage_metadata=None,
+    )
+
+    class Models:
+        async def generate_content(self, *, model, contents, config):
+            calls.append(model)
+            if model == "test-model":
+                raise TimeoutError("primary timed out")
+            return expected
+
+    service._client = SimpleNamespace(models=Models())
+    content = types.Content(role="user", parts=[types.Part(text="hello")])
+
+    async def no_speak(_text: str) -> None:
+        return None
+
+    service.speak = no_speak
+
+    with patch.object(live_module, "append_message", return_value=None):
+        answer = asyncio.run(service._submit_content(content))
+
+    assert answer == "fallback answer"
+    assert calls == ["test-model", "fallback-model"]
+
+
 def test_tts_quota_moves_to_fallback_and_cools_down() -> None:
     """A daily TTS quota must not be paid again on every answer."""
     service = _service(FakeAudio())
@@ -309,3 +520,101 @@ def test_tool_results_are_scrubbed_before_the_model_sees_them() -> None:
     assert "AIza" not in str(result)
     assert "AQ." not in str(result)
     assert "[REDACTED" in str(result)
+
+
+def test_agent_loop_executes_all_function_calls_in_order() -> None:
+    """One macro response must run every call and return one combined turn."""
+    service = _service(FakeAudio())
+    service._types = types
+    service._system_instruction = "test"
+    executed: list[tuple[str, dict[str, Any]]] = []
+
+    class Tools:
+        async def execute(self, name, arguments):
+            executed.append((name, arguments))
+            return {"ok": True, "tool": name}
+
+    service._tools = Tools()
+
+    calls = [
+        types.FunctionCall(name="manage_audio", args={"action": "mute"}),
+        types.FunctionCall(
+            name="manage_desktop_settings", args={"setting": "dark_mode"}
+        ),
+    ]
+    responses = [
+        SimpleNamespace(
+            function_calls=calls,
+            text=None,
+            candidates=[
+                SimpleNamespace(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(function_call=call) for call in calls],
+                    )
+                )
+            ],
+            usage_metadata=None,
+        ),
+        SimpleNamespace(
+            function_calls=None,
+            text="Both actions are complete.",
+            candidates=[
+                SimpleNamespace(
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part(text="Both actions are complete.")],
+                    )
+                )
+            ],
+            usage_metadata=None,
+        ),
+    ]
+
+    class Models:
+        def __init__(self) -> None:
+            self.index = 0
+
+        async def generate_content(self, *, model, contents, config):
+            response = responses[self.index]
+            self.index += 1
+            return response
+
+    service._client = SimpleNamespace(models=Models())
+
+    async def no_speak(_text: str) -> None:
+        return None
+
+    service.speak = no_speak
+    content = types.Content(
+        role="user", parts=[types.Part(text="mute and switch to dark mode")]
+    )
+
+    with patch.object(live_module, "append_message", return_value=None):
+        answer = asyncio.run(service.agent_loop(content))
+
+    assert answer == "Both actions are complete."
+    assert executed == [
+        ("manage_audio", {"action": "mute"}),
+        ("manage_desktop_settings", {"setting": "dark_mode"}),
+    ]
+
+    tool_turns = [
+        entry
+        for entry in service._history
+        if any(
+            getattr(part, "function_response", None) is not None
+            for part in (entry.parts or [])
+        )
+    ]
+    assert len(tool_turns) == 1
+    function_responses = [
+        part.function_response
+        for part in tool_turns[0].parts
+        if getattr(part, "function_response", None) is not None
+    ]
+    assert [response.name for response in function_responses] == [
+        "manage_audio",
+        "manage_desktop_settings",
+    ]
+    assert all(response.response["result"]["ok"] for response in function_responses)
