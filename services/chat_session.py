@@ -46,7 +46,7 @@ _REQUEST_COUNTER = itertools.count(1)
 def _system_prompt(config: dict[str, Any]) -> str:
     language_code = str(config.get("speech", {}).get("tts_language") or "en").strip()
     character = config.get("character") or {}
-    name = str(character.get("name") or "BitMon").strip()
+    name = str(character.get("name") or "Kakarot").strip()
     personality = str(character.get("personality_prompt") or "").strip()
     prompt = (
         settings.SYSTEM_PROMPT_CORE
@@ -140,7 +140,7 @@ async def chat_session_proxy(client_ws: WebSocket) -> None:
                 f"tts={tts_provider_now if voice_response_now else 'off'} "
                 f"tools={tool_names_now} text_chars={len(user_text)}"
             )
-            await client_ws.send_text(json.dumps({"type": "bitmon.response_interrupted"}))
+            await client_ws.send_text(json.dumps({"type": "kakarot.response_interrupted"}))
             await client_ws.send_text(json.dumps({"type": "response.created"}))
             history[0] = {"role": "system", "content": _system_prompt(config_now)}
             response_started = time.perf_counter()
@@ -326,7 +326,7 @@ async def chat_session_proxy(client_ws: WebSocket) -> None:
             message = await client_ws.receive_text()
             event = json.loads(message)
             event_type = event.get("type")
-            if event_type == "bitmon.whisper_audio":
+            if event_type == "kakarot.whisper_audio":
                 await transcribe_audio_clip(message)
             elif event_type == "conversation.item.create":
                 item = event.get("item") or {}

@@ -223,7 +223,7 @@ async def local_session_proxy(
         async with response_lock:
             _log_user(user_text)
             await client_ws.send_text(json.dumps({
-                "type": "bitmon.response_interrupted",
+                "type": "kakarot.response_interrupted",
             }))
             await client_ws.send_text(json.dumps({
                 "type": "response.created",
@@ -395,10 +395,10 @@ async def local_session_proxy(
                 text = _extract_user_text(message)
                 if text:
                     await send_response(text)
-            elif event_type == "bitmon.whisper_audio":
+            elif event_type == "kakarot.whisper_audio":
                 await handle_audio_clip(message)
             elif event_type == "response.cancel":
-                await client_ws.send_text(json.dumps({"type": "bitmon.response_interrupted"}))
+                await client_ws.send_text(json.dumps({"type": "kakarot.response_interrupted"}))
     except WebSocketDisconnect:
         _log_system("cliente desconectou")
     except Exception as exc:

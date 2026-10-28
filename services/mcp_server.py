@@ -1,4 +1,4 @@
-"""BitMon MCP server.
+"""Kakarot MCP server.
 
 The FastAPI backend mounts this server at /mcp when the MCP SDK is installed.
 It exposes the same safe local tools used by the voice assistant.
@@ -16,7 +16,7 @@ from tools.screen_tools import analyze_screen, capture_screen
 
 
 mcp = FastMCP(
-    "BitMon Tools",
+    "Kakarot Tools",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
@@ -28,7 +28,7 @@ def screen_capture(monitor: int = 1) -> str:
     """Capture the user's screen and return PNG metadata plus base64 image data."""
     if not get_config().get("tools", {}).get("screen_analysis", False):
         return json.dumps(
-            {"ok": False, "error": "Screen analysis is disabled in BitMon config."},
+            {"ok": False, "error": "Screen analysis is disabled in Kakarot config."},
             ensure_ascii=False,
         )
     screenshot = capture_screen(monitor=monitor)
@@ -52,10 +52,10 @@ async def screen_analyze(question: str = "What is visible on my screen?") -> str
 
 @mcp.tool()
 async def open_configuration() -> str:
-    """Open the BitMon configuration page in the user's browser."""
+    """Open the Kakarot configuration page in the user's browser."""
     if not get_config().get("tools", {}).get("open_configuration", False):
         return json.dumps(
-            {"ok": False, "error": "Open configuration is disabled in BitMon config."},
+            {"ok": False, "error": "Open configuration is disabled in Kakarot config."},
             ensure_ascii=False,
         )
     return json.dumps(await execute_tool_call("open_configuration", {}, user_request=""), ensure_ascii=False)

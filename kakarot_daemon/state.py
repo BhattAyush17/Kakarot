@@ -46,7 +46,12 @@ _FIELDS: dict[str, Any] = {
     "repository_tools": (),
     # Monotonic id of the last "open settings" request; never resets.
     "settings_request": 0,
+    # Gemini request/token ledger for the last user turn and the whole process.
+    "last_turn_usage": {},
+    "session_usage": {},
 }
+
+_DICT_FIELDS = ("last_turn_usage", "session_usage")
 
 # Fields the coordinator derives and reporters may never set directly.
 _DERIVED = ("state_version", "phase", "listening")
@@ -84,7 +89,13 @@ class DaemonState:
         # stays safe to share, but each instance holds a real list so "no
         # reminders" compares equal to a report of no reminders.
         self._fields: dict[str, Any] = {
-            key: list(value) if isinstance(value, tuple) else value
+            key: (
+                list(value)
+                if isinstance(value, tuple)
+                else dict(value)
+                if isinstance(value, dict)
+                else value
+            )
             for key, value in _FIELDS.items()
         }
         self._version = 0
@@ -162,6 +173,8 @@ class DaemonState:
             "repository_error": fields["repository_error"],
             "repository_tools": list(fields["repository_tools"]),
             "settings_request": fields["settings_request"],
+            "last_turn_usage": dict(fields["last_turn_usage"]),
+            "session_usage": dict(fields["session_usage"]),
         }
 
     # -- internals --------------------------------------------------------
@@ -173,6 +186,10 @@ class DaemonState:
                 # Normalise to a list so a reporter passing a tuple and the
                 # coordinator's own default compare equal.
                 value = list(value)
+            elif key in _DICT_FIELDS:
+                # The ledger is copied so a later in-place update by the
+                # reporter cannot mutate an already-published snapshot.
+                value = dict(value or {})
             if self._fields[key] != value:
                 self._fields[key] = value
                 changed = True

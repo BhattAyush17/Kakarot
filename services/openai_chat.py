@@ -1,4 +1,4 @@
-"""OpenAI chat adapter (Chat Completions + the shared BitMon tool loop)."""
+"""OpenAI chat adapter (Chat Completions + the shared Kakarot tool loop)."""
 
 from __future__ import annotations
 

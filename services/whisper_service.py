@@ -126,7 +126,7 @@ async def preload_whisper(model_name: str, language_code: str) -> None:
 
 
 async def preload_configured_whisper(config: dict[str, Any]) -> None:
-    # Whisper is the only STT in BitMon, regardless of the LLM provider
+    # Whisper is the only STT in Kakarot, regardless of the LLM provider
     # (inworld/local/openai/anthropic), so preload for all of them. The global
     # whisper/speech sections are the source of truth; the provider section is
     # only a legacy fallback.
