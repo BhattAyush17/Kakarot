@@ -1,4 +1,4 @@
-"""JSON-backed BitMon runtime configuration."""
+"""JSON-backed Kakarot runtime configuration."""
 
 from __future__ import annotations
 
@@ -14,9 +14,11 @@ from core.config import (
     get_inworld_api_key_source,
     is_anthropic_api_key_configured,
     is_inworld_api_key_configured,
+    is_gemini_api_key_configured,
     is_openai_api_key_configured,
     set_anthropic_api_key,
     set_inworld_api_key,
+    set_gemini_api_key,
     set_openai_api_key,
 )
 from core.config_defaults import (
@@ -37,12 +39,16 @@ from core.secret_store import SecretStoreError
 
 
 LEGACY_NAME = "digi" + "mon"
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "bitmon_config.json"
-LEGACY_CONFIG_PATH = Path(__file__).resolve().parent.parent / f"{LEGACY_NAME}_config.json"
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "kakarot_config.json"
+LEGACY_CONFIG_PATH = (
+    Path(__file__).resolve().parent.parent / f"{LEGACY_NAME}_config.json"
+)
 
 
 def _selected_config_path() -> Path:
-    configured = os.environ.get("BITMON_CONFIG_PATH") or os.environ.get(f"{LEGACY_NAME.upper()}_CONFIG_PATH")
+    configured = os.environ.get("KAKAROT_CONFIG_PATH") or os.environ.get(
+        f"{LEGACY_NAME.upper()}_CONFIG_PATH"
+    )
     if configured:
         return Path(configured)
     if not DEFAULT_CONFIG_PATH.exists() and LEGACY_CONFIG_PATH.exists():
@@ -114,7 +120,9 @@ def _extract_secret_updates(config: dict[str, Any]) -> dict[str, str]:
             if isinstance(value, str) and value.strip():
                 updates["inworld_api_key"] = value.strip()
 
-    def pop_named_secret(section: dict[str, Any], keys: set[str], secret_name: str) -> None:
+    def pop_named_secret(
+        section: dict[str, Any], keys: set[str], secret_name: str
+    ) -> None:
         for key in list(keys):
             value = section.pop(key, None)
             if isinstance(value, str) and value.strip():
@@ -122,8 +130,21 @@ def _extract_secret_updates(config: dict[str, Any]) -> dict[str, str]:
 
     secrets = config.get("secrets")
     if isinstance(secrets, dict):
-        pop_named_secret(secrets, {"openai_api_key", "openaiApiKey", "OPENAI_API_KEY"}, "openai_api_key")
-        pop_named_secret(secrets, {"anthropic_api_key", "anthropicApiKey", "ANTHROPIC_API_KEY"}, "anthropic_api_key")
+        pop_named_secret(
+            secrets,
+            {"openai_api_key", "openaiApiKey", "OPENAI_API_KEY"},
+            "openai_api_key",
+        )
+        pop_named_secret(
+            secrets,
+            {"anthropic_api_key", "anthropicApiKey", "ANTHROPIC_API_KEY"},
+            "anthropic_api_key",
+        )
+        pop_named_secret(
+            secrets,
+            {"gemini_api_key", "geminiApiKey", "GEMINI_API_KEY"},
+            "gemini_api_key",
+        )
         pop_secret_fields(secrets)
 
     inworld = config.get("inworld")
@@ -134,11 +155,23 @@ def _extract_secret_updates(config: dict[str, Any]) -> dict[str, str]:
     # must never be persisted to disk: move them to the OS credential store.
     openai_section = config.get("openai")
     if isinstance(openai_section, dict):
-        pop_named_secret(openai_section, {"api_key", "apiKey", "openai_api_key"}, "openai_api_key")
+        pop_named_secret(
+            openai_section, {"api_key", "apiKey", "openai_api_key"}, "openai_api_key"
+        )
 
     anthropic_section = config.get("anthropic")
     if isinstance(anthropic_section, dict):
-        pop_named_secret(anthropic_section, {"api_key", "apiKey", "anthropic_api_key"}, "anthropic_api_key")
+        pop_named_secret(
+            anthropic_section,
+            {"api_key", "apiKey", "anthropic_api_key"},
+            "anthropic_api_key",
+        )
+
+    gemini_section = config.get("gemini")
+    if isinstance(gemini_section, dict):
+        pop_named_secret(
+            gemini_section, {"api_key", "apiKey", "gemini_api_key"}, "gemini_api_key"
+        )
 
     mcps = config.get("mcps")
     servers = mcps.get("servers") if isinstance(mcps, dict) else None
@@ -146,7 +179,9 @@ def _extract_secret_updates(config: dict[str, Any]) -> dict[str, str]:
         for index, server in enumerate(servers):
             if not isinstance(server, dict):
                 continue
-            server_id = normalize_mcp_server_id(server.get("id") or server.get("name"), f"mcp_{index + 1}")
+            server_id = normalize_mcp_server_id(
+                server.get("id") or server.get("name"), f"mcp_{index + 1}"
+            )
             server["id"] = server_id
             auth_type = str(server.get("auth_type") or "none").strip().lower()
             server["auth_type"] = auth_type if auth_type in MCP_AUTH_TYPES else "none"
@@ -168,6 +203,8 @@ def _apply_secret_updates(config: dict[str, Any]) -> bool:
         set_openai_api_key(updates["openai_api_key"])
     if updates.get("anthropic_api_key"):
         set_anthropic_api_key(updates["anthropic_api_key"])
+    if updates.get("gemini_api_key"):
+        set_gemini_api_key(updates["gemini_api_key"])
     for key, value in updates.items():
         if key.startswith("mcp_bearer_token:"):
             set_bearer_token(key.split(":", 1)[1], value)
@@ -183,6 +220,7 @@ def _set_secret_flags(config: dict[str, Any]) -> None:
     secrets["inworld_api_key_source"] = get_inworld_api_key_source()
     secrets["openai_api_key_configured"] = is_openai_api_key_configured()
     secrets["anthropic_api_key_configured"] = is_anthropic_api_key_configured()
+    secrets["gemini_api_key_configured"] = is_gemini_api_key_configured()
 
 
 def _normalize_mcp_servers(config: dict[str, Any]) -> None:
@@ -198,7 +236,9 @@ def _normalize_mcp_servers(config: dict[str, Any]) -> None:
     for index, server in enumerate(servers):
         if not isinstance(server, dict):
             continue
-        server_id = normalize_mcp_server_id(server.get("id") or server.get("name"), f"mcp_{index + 1}")
+        server_id = normalize_mcp_server_id(
+            server.get("id") or server.get("name"), f"mcp_{index + 1}"
+        )
         base_id = server_id
         suffix = 2
         while server_id in seen:
@@ -255,13 +295,15 @@ def _normalize_ha_answers(config: dict[str, Any]) -> None:
             answer_id = f"{base_id}_{suffix}"
             suffix += 1
         seen.add(answer_id)
-        normalized.append({
-            "id": answer_id,
-            "language": language,
-            "action": action,
-            "text": text,
-            "enabled": bool(answer.get("enabled", True)),
-        })
+        normalized.append(
+            {
+                "id": answer_id,
+                "language": language,
+                "action": action,
+                "text": text,
+                "enabled": bool(answer.get("enabled", True)),
+            }
+        )
     # Invariant: each language+action group keeps at least one enabled answer,
     # so toggling everything off can never leave a state without a spoken
     # confirmation. The UI blocks this too; this covers direct API writes.
@@ -284,8 +326,12 @@ def _set_mcp_secret_flags(config: dict[str, Any]) -> None:
             continue
         server_id = normalize_mcp_server_id(server.get("id") or server.get("name"))
         auth_type = str(server.get("auth_type") or "none").strip().lower()
-        server["bearer_token_configured"] = auth_type == "bearer" and is_bearer_token_configured(server_id)
-        server["oauth_connected"] = auth_type == "oauth" and is_oauth_connected(server_id)
+        server["bearer_token_configured"] = (
+            auth_type == "bearer" and is_bearer_token_configured(server_id)
+        )
+        server["oauth_connected"] = auth_type == "oauth" and is_oauth_connected(
+            server_id
+        )
 
 
 def _provider_value(value: Any, default: str = "inworld") -> str:
@@ -304,7 +350,11 @@ def _sync_voice_sections(config: dict[str, Any]) -> None:
     legacy_provider = _provider_value(config.get("provider"))
     inworld = config.setdefault("inworld", {})
     local = config.setdefault("local", {})
-    provider_section = config.get(legacy_provider) if isinstance(config.get(legacy_provider), dict) else inworld
+    provider_section = (
+        config.get(legacy_provider)
+        if isinstance(config.get(legacy_provider), dict)
+        else inworld
+    )
 
     llm = config.setdefault("llm", {})
     if not isinstance(llm, dict):
@@ -318,9 +368,15 @@ def _sync_voice_sections(config: dict[str, Any]) -> None:
         tts = {}
         config["tts"] = tts
     enabled = tts.get("enabled", None)
-    legacy_enabled = provider_section.get("voice_response", None) if isinstance(provider_section, dict) else None
+    legacy_enabled = (
+        provider_section.get("voice_response", None)
+        if isinstance(provider_section, dict)
+        else None
+    )
     if legacy_enabled is None:
-        legacy_enabled = inworld.get("voice_response", local.get("voice_response", None))
+        legacy_enabled = inworld.get(
+            "voice_response", local.get("voice_response", None)
+        )
     if legacy_enabled is not None and bool(legacy_enabled) != bool(enabled):
         enabled = legacy_enabled
     if enabled is None:
@@ -481,7 +537,7 @@ def _backup_existing_config(next_config: dict[str, Any]) -> None:
 
     CONFIG_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    backup_path = CONFIG_BACKUP_DIR / f"bitmon_config.{stamp}.json"
+    backup_path = CONFIG_BACKUP_DIR / f"kakarot_config.{stamp}.json"
     backup_path.write_text(current_text, encoding="utf-8")
     _prune_old_backups()
 
@@ -543,7 +599,9 @@ def update_config(config_update: dict[str, Any]) -> dict[str, Any]:
 
 def get_client_config() -> dict[str, Any]:
     config = get_config()
-    provider = str(config.get("llm", {}).get("provider") or config.get("provider") or "inworld").lower()
+    provider = str(
+        config.get("llm", {}).get("provider") or config.get("provider") or "inworld"
+    ).lower()
     return {
         "config_revision": _config_revision(config),
         "provider": provider,
