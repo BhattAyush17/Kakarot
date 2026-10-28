@@ -1,5 +1,7 @@
 import os
 import shlex
+import shutil
+import tempfile
 import unittest
 import asyncio
 import uuid
@@ -8,6 +10,7 @@ from pathlib import Path
 from kakarot_daemon.sandbox import (
     build_bwrap_invocation,
     execute_sandboxed,
+    run_sandboxed_command,
 )
 from kakarot_daemon.tools import ToolRegistry
 
@@ -77,6 +80,22 @@ class TestSandbox(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("RUNTIME-SECRET", result["stdout"])
         self.assertFalse(result["ok"])
         self.assertIn("No such file or directory", result["stderr"])
+
+    async def test_writable_workspace_is_an_explicit_opt_in(self):
+        if shutil.which("bwrap") is None:
+            self.skipTest("bubblewrap is not installed")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            result = await asyncio.to_thread(
+                run_sandboxed_command,
+                "pwd; printf 'written\\n' > marker.txt",
+                timeout=10,
+                cwd="/workspace",
+                writable_workspace=root,
+            )
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["stdout"].splitlines()[0], "/workspace")
+            self.assertEqual((root / "marker.txt").read_text(), "written\n")
 
 
 if __name__ == '__main__':
