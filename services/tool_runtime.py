@@ -1,4 +1,4 @@
-"""Tool execution bridge for model-selected BitMon tools."""
+"""Tool execution bridge for model-selected Kakarot tools."""
 
 from __future__ import annotations
 
@@ -10,13 +10,6 @@ import re
 import time
 import webbrowser
 from typing import Any
-
-from services.mcp_external import call_mcp_tool
-from tools.applications import list_applications, open_application
-from tools.home_assistant import execute_home_assistant_request
-from tools.screen_tools import analyze_screen
-from tools.weather import get_weather
-
 
 SCREEN_ANALYZE_TOOL: dict[str, Any] = {
     "type": "function",
@@ -43,8 +36,8 @@ OPEN_CONFIGURATION_TOOL: dict[str, Any] = {
     "type": "function",
     "name": "open_configuration",
     "description": (
-        "Open the BitMon configuration page in the user's browser. Use this whenever the user asks, "
-        "in any language, to open BitMon settings, configuration, preferences, options, or the config page."
+        "Open the Kakarot configuration page in the user's browser. Use this whenever the user asks, "
+        "in any language, to open Kakarot settings, configuration, preferences, options, or the config page."
     ),
     "parameters": {
         "type": "object",
@@ -91,7 +84,7 @@ GET_WEATHER_TOOL: dict[str, Any] = {
         "Get the current weather and a short forecast for a city, in any language. Use this "
         "whenever the user asks about the weather, temperature, rain, or forecast (e.g. \"como vai "
         "estar o tempo amanhã?\", \"is it going to rain in Lisbon?\"). If the user names a city, pass "
-        "it as location; otherwise omit location to use the city configured in BitMon."
+        "it as location; otherwise omit location to use the city configured in Kakarot."
     ),
     "parameters": {
         "type": "object",
@@ -171,7 +164,7 @@ LEGACY_NAME = "digi" + "mon"
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(f"BITMON_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
+    return os.environ.get(f"KAKAROT_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
 
 
 TOOL_INSTRUCTIONS = (
@@ -180,7 +173,7 @@ TOOL_INSTRUCTIONS = (
     "If the user asks you to look at, inspect, read, analyze, or describe their screen, call screen_analyze. "
     "Do not answer with a visibility disclaimer if screen_analyze returned ok=true. "
     "When calling screen_analyze, pass the user's actual request or goal as the question. "
-    "If the user asks to open the BitMon configuration page or settings, call open_configuration. "
+    "If the user asks to open the Kakarot configuration page or settings, call open_configuration. "
     "If the user asks to open, run, launch or start a desktop application (e.g. Photoshop), call "
     "open_application with the application name as the user said it; never invent a file path. "
     "If the user asks which applications you can open, call open_application with action='list'. "
@@ -319,7 +312,7 @@ def get_session_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def get_chat_tools(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return OpenAI Chat Completions tool definitions for enabled BitMon tools."""
+    """Return OpenAI Chat Completions tool definitions for enabled Kakarot tools."""
     chat_tools: list[dict[str, Any]] = []
     for tool in get_session_tools(config):
         chat_tools.append({
@@ -501,7 +494,7 @@ async def create_chat_completion_with_tools(
     max_tool_rounds: int = 4,
     **kwargs: Any,
 ) -> tuple[str, list[str]]:
-    """Run a Chat Completions request and execute model-selected BitMon tools."""
+    """Run a Chat Completions request and execute model-selected Kakarot tools."""
     global _TOOLS_REJECTED_UNTIL
     request_messages = [dict(message) for message in messages]
     called_tools: list[str] = []
@@ -528,7 +521,7 @@ async def create_chat_completion_with_tools(
                 # Loud on purpose: from here on the model CANNOT call any tool
                 # natively. If this shows up in the logs, the configured
                 # model/provider rejects tool definitions (e.g. plan limits);
-                # BitMon degrades to parsing calls the model writes as text.
+                # Kakarot degrades to parsing calls the model writes as text.
                 print(f"[Tool] provider rejected tool definitions; retrying WITHOUT tools: {str(exc)[:200]}")
                 _TOOLS_REJECTED_UNTIL = time.monotonic() + _TOOLS_REJECTED_TTL_SECONDS
                 tools_active = []
@@ -634,7 +627,7 @@ async def create_chat_completion_with_tools(
     return "", called_tools
 
 
-# Log labels: BitMon capabilities vs external integrations, so the launcher
+# Log labels: Kakarot capabilities vs external integrations, so the launcher
 # log shows at a glance what the model invoked and how it went.
 TOOL_LOG_LABELS = {
     "screen_analyze": "[Capability] Screen analysis",
@@ -689,6 +682,8 @@ async def _dispatch_tool_call(
     user_request: str,
 ) -> dict[str, Any]:
     if name == "screen_analyze":
+        from tools.screen_tools import analyze_screen
+
         return await analyze_screen(str(arguments.get("question") or ""), user_request=user_request)
 
     if name == "open_configuration":
@@ -699,14 +694,20 @@ async def _dispatch_tool_call(
         return {"ok": False, "url": url, "error": f"Could not open configuration page: {url}"}
 
     if name == "open_application":
+        from tools.applications import list_applications, open_application
+
         if str(arguments.get("action") or "open").strip().lower() == "list":
             return list_applications()
         return await open_application(str(arguments.get("name") or ""))
 
     if name == "get_weather":
+        from tools.weather import get_weather
+
         return await get_weather(str(arguments.get("location") or ""))
 
     if name == "home_assistant":
+        from tools.home_assistant import execute_home_assistant_request
+
         raw_targets = arguments.get("targets")
         if isinstance(raw_targets, str):
             targets = [raw_targets]
@@ -725,6 +726,8 @@ async def _dispatch_tool_call(
         )
 
     if name == "external_mcp":
+        from services.mcp_external import call_mcp_tool
+
         from core.config_store import get_config
 
         config = get_config()

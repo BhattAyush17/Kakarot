@@ -14,13 +14,23 @@ import itertools
 import time
 from typing import Any
 
-
 MAX_MESSAGES = 200
+MAX_SESSION_EVENTS = 64
 
 _history: list[dict[str, Any]] = []
 _message_counter = itertools.count(1)
 _sessions: dict[int, asyncio.Queue[Any]] = {}
 _session_counter = itertools.count(1)
+
+
+def _put_bounded(queue: asyncio.Queue[Any], item: Any) -> None:
+    """Keep session injection queues bounded, dropping the oldest event on overload."""
+    if queue.full():
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    queue.put_nowait(item)
 
 
 def append_message(role: str, text: str) -> dict[str, Any] | None:
@@ -55,13 +65,19 @@ def broadcast_clear() -> None:
     queue normally carries) onto each session queue. The session proxy forwards
     it verbatim to the pet, which clears its subtitle."""
     for queue in _sessions.values():
-        queue.put_nowait({"type": "bitmon.clear_subtitle"})
+        _put_bounded(queue, {"type": "kakarot.clear_subtitle"})
 
 
-def register_session() -> tuple[int, "asyncio.Queue[Any]"]:
+def broadcast_event(event: dict[str, Any]) -> None:
+    """Send a bounded server-originated event to every live persona session."""
+    for queue in _sessions.values():
+        _put_bounded(queue, dict(event))
+
+
+def register_session() -> tuple[int, asyncio.Queue[Any]]:
     """Register a live voice session and return its id and injection queue."""
     session_id = next(_session_counter)
-    queue: asyncio.Queue[Any] = asyncio.Queue()
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=MAX_SESSION_EVENTS)
     _sessions[session_id] = queue
     return session_id, queue
 
@@ -80,5 +96,5 @@ def inject_text(text: str) -> bool:
     if not text or not _sessions:
         return False
     for queue in _sessions.values():
-        queue.put_nowait(text)
+        _put_bounded(queue, text)
     return True

@@ -1,9 +1,9 @@
 """Anthropic (Claude) chat adapter using the official ``anthropic`` SDK.
 
-BitMon's chat pipeline speaks OpenAI Chat Completions internally (history as
+Kakarot's chat pipeline speaks OpenAI Chat Completions internally (history as
 ``role``/``content`` dicts, tools in the Chat Completions function format).
 This module converts that into Anthropic Messages API calls and runs the
-manual agentic loop, executing BitMon tools through the same
+manual agentic loop, executing Kakarot tools through the same
 ``execute_tool_call`` funnel used by the other providers.
 """
 
@@ -87,7 +87,7 @@ async def complete(
     user_request: str,
     max_tokens: int,
 ) -> tuple[str, list[str]]:
-    """Run one Claude conversation turn, executing BitMon tools when requested.
+    """Run one Claude conversation turn, executing Kakarot tools when requested.
 
     Same interface as the other provider adapters: returns (answer, tool names).
     """

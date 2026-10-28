@@ -41,7 +41,7 @@ def _oauth_provider(
 ) -> OAuthClientProvider:
     metadata = OAuthClientMetadata(
         redirect_uris=[redirect_uri or "http://127.0.0.1:8000/api/mcps/oauth/callback"],
-        client_name="BitMon",
+        client_name="Kakarot",
         token_endpoint_auth_method="none",
     )
     return OAuthClientProvider(

@@ -14,7 +14,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 PERSONA_MAIN = BACKEND_DIR / "persona" / "personagem.py"
 # The venv lives inside the app folder (self-contained). Fall back to the
 # interpreter currently running the backend, which is already the venv python.
-PYTHON_EXE = BACKEND_DIR / "venv" / "Scripts" / "python.exe"
+PYTHON_EXE = BACKEND_DIR / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 PYTHON = str(PYTHON_EXE) if PYTHON_EXE.exists() else sys.executable
 
 
