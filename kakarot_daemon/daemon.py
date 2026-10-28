@@ -170,9 +170,12 @@ async def _serve() -> None:
         snapshot = state.snapshot()
         snapshot["audio_available"] = audio.audio_available
         # ``speak`` gates capture for the length of an answer without clearing
-        # the listening intent, so a closed device is healthy unless the user
-        # muted or the subsystem lost its hardware entirely.
-        snapshot["mic_active"] = audio.is_capturing or (
+        # the listening intent, so a temporary closed device is healthy unless
+        # the user muted or the subsystem lost its hardware entirely.  The
+        # user's mute intent is authoritative: a stale capture flag must never
+        # make a muted microphone look active, or the UI's next click becomes a
+        # second mute instead of the unmute that starts listening.
+        snapshot["mic_active"] = bool(
             audio.audio_available and not snapshot.get("muted")
         )
         return snapshot
@@ -314,6 +317,7 @@ async def _serve() -> None:
                     vad_min_speech_seconds=config.vad_min_speech_seconds,
                     barge_in_enabled=config.barge_in_enabled,
                     follow_up_listening=config.follow_up_listening,
+                    audit_usage=True,
                     on_change=state.apply,
                 )
                 active_service[0] = service
