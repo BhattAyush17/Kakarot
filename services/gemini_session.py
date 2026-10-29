@@ -29,6 +29,9 @@ LOGGER = logging.getLogger(__name__)
 INPUT_RATE = 16_000
 CLIENT_RATE = 24_000
 MAX_AUDIO_CLIP_BYTES = CLIENT_RATE * 2 * 30
+# A model turn that goes silent mid-stream is stalled, not thinking: the Live
+# API keeps the socket open, so without a bound the client would wait forever.
+LIVE_STALL_SECONDS = 7.0
 
 MEMORY_FUNCTIONS = [
     types.FunctionDeclaration(
@@ -341,7 +344,17 @@ async def gemini_session_proxy(client_ws: WebSocket, api_key: str) -> None:
                 # otherwise the whole session is torn down after the first one.
                 while True:
                     received = False
-                    async for response in live.receive():
+                    stream = live.receive()
+                    while True:
+                        try:
+                            if response_started:
+                                response = await asyncio.wait_for(
+                                    stream.__anext__(), timeout=LIVE_STALL_SECONDS
+                                )
+                            else:
+                                response = await stream.__anext__()
+                        except StopAsyncIteration:
+                            break
                         received = True
                         if response.usage_metadata is not None:
                             turn_usage.add_usage(response.usage_metadata)

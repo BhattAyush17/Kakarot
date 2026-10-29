@@ -20,7 +20,11 @@ from kakarot_overlay.settings_dialog import SettingsDialog
 PHASES = {
     "IDLE_MUTED": ("IDLE_MUTED", "Muted"),
     "DISCONNECTED": ("DISCONNECTED", "Connecting…"),
+    "UNSTABLE": ("UNSTABLE", "Reconnecting…"),
     "LISTENING": ("LISTENING", "Listening"),
+    "THINKING": ("THINKING", "Thinking…"),
+    "TOOL_CALL": ("TOOL_CALL", "Executing task…"),
+    # Older daemons reported one processing phase for both states.
     "PROCESSING_TOOL": ("PROCESSING_TOOL", "Executing task…"),
     "SPEAKING": ("SPEAKING", "Speaking"),
     "ERROR": ("ERROR", ""),
@@ -131,7 +135,7 @@ class Overlay(W.QWidget):
     def paintEvent(self, event):
         painter = G.QPainter(self)
         painter.drawPixmap(self.face_pos, self.face)
-        if self.state in ("reminder", "PROCESSING_TOOL"):
+        if self.state in ("reminder", "PROCESSING_TOOL", "THINKING", "TOOL_CALL"):
             painter.setCompositionMode(
                 G.QPainter.CompositionMode.CompositionMode_SourceAtop
             )
@@ -159,6 +163,9 @@ class Overlay(W.QWidget):
             "LISTENING": "#57e2bb",
             "SPEAKING": "#b499ff",
             "PROCESSING_TOOL": "#edbd6d",
+            "THINKING": "#edbd6d",
+            "TOOL_CALL": "#edbd6d",
+            "UNSTABLE": "#ffcf4c",
             "ERROR": "#ff737f",
             "reminder": "#ffcf4c",
         }.get(self.state, "#718397")
@@ -193,6 +200,8 @@ class Overlay(W.QWidget):
         if self.isVisible() and state in (
             "LISTENING",
             "SPEAKING",
+            "THINKING",
+            "TOOL_CALL",
             "PROCESSING_TOOL",
             "reminder",
         ):
@@ -243,7 +252,11 @@ class Overlay(W.QWidget):
             if error:
                 phase = "ERROR"
             elif status.get("processing"):
-                phase = "PROCESSING_TOOL"
+                phase = (
+                    "TOOL_CALL"
+                    if str(status.get("tool") or "").strip()
+                    else "THINKING"
+                )
             elif self.muted:
                 phase = "IDLE_MUTED"
             elif not status.get("connected"):

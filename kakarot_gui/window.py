@@ -19,8 +19,12 @@ MAX_LINES = 5000
 PHASE_TITLES = {
     "IDLE_MUTED": "Microphone off",
     "LISTENING": "Listening",
+    "THINKING": "Thinking",
+    "TOOL_CALL": "Running a tool",
+    # Older daemons reported one processing phase for both states.
     "PROCESSING_TOOL": "Running a tool",
     "SPEAKING": "Speaking",
+    "UNSTABLE": "Reconnecting",
     "DISCONNECTED": "Reconnecting",
     "ERROR": "Needs attention",
     "UNKNOWN": "Unknown",
@@ -125,8 +129,11 @@ class KakarotWindow(Adw.ApplicationWindow):
         return {
             "IDLE_MUTED": "microphone-off-symbolic",
             "LISTENING": "microphone-sensitive-symbolic",
+            "THINKING": "content-loading-symbolic",
+            "TOOL_CALL": "content-loading-symbolic",
             "PROCESSING_TOOL": "content-loading-symbolic",
             "SPEAKING": "audio-volume-high-symbolic",
+            "UNSTABLE": "network-offline-symbolic",
             "DISCONNECTED": "network-offline-symbolic",
             "ERROR": "dialog-warning-symbolic",
         }.get(phase, "dialog-information-symbolic")

@@ -618,9 +618,8 @@ SESSION_TOOL_PROMPT_BUDGET = 6000
 REQUEST_DEADLINE_SECONDS = 45.0
 # The Google client can spend minutes retrying a 503 internally. A single
 # generateContent attempt must be bounded so one overloaded model hands over to
-# the next candidate instead of leaving the UI in PROCESSING forever. Keep this
-# short: voice turns should fail over quickly, not spend 12 seconds on a model
-# that is merely hung. Every candidate gets its own 6-second budget.
+# the next candidate instead of leaving the UI in PROCESSING forever. Every
+# candidate gets its own attempt budget inside one shared request deadline.
 GENERATE_ATTEMPT_TIMEOUT_SECONDS = 12.0
 RETRY_BASE_SECONDS = 1.0
 RETRY_MAX_SECONDS = 4.0
@@ -642,6 +641,15 @@ MODEL_COOLDOWN_SECONDS = 60.0
 # rotation quickly or consecutive turns can exhaust every candidate.
 MODEL_TIMEOUT_COOLDOWN_SECONDS = 15.0
 MODEL_RATE_LIMIT_COOLDOWN_SECONDS = 3600.0
+# After an answer the microphone reopens for a short follow-up window so the
+# user can reply naturally; silence beyond the window closes the gate again
+# instead of leaving the device open forever.
+FOLLOW_UP_WINDOW_SECONDS = 4.0
+# A request that is still in flight with no response after this long is treated
+# as a stall: the pipeline pauses and the user hears a reconnect notice.
+STALL_WATCHDOG_SECONDS = 7.0
+STALL_NOTICE = "My connection is stalling. Give me a second to reconnect."
+RECONNECT_FAILED_NOTICE = "Reconnection failed. Standing by."
 # Rolling context is optional: it runs off the voice path on the cheapest
 # fallback model and must never delay or fail a turn.
 ROLLING_SUMMARY_MODEL = "gemini-3.1-flash-lite"
@@ -971,6 +979,16 @@ class KakarotLiveService:
         )
         self._barge_in_enabled = bool(barge_in_enabled)
         self._follow_up_listening = bool(follow_up_listening)
+        # Set when the post-answer follow-up window opens; the capture loop
+        # auto-mutes once it expires without speech.
+        self._follow_up_deadline: float | None = None
+        # Wall-clock start of the request currently in flight. The watchdog
+        # compares it against STALL_WATCHDOG_SECONDS; None means no request.
+        self._request_active_since: float | None = None
+        self._stall_notified = False
+        # A connection recovery gets exactly one retry per turn.
+        self._recovery_attempted = False
+        self._watchdog_task: asyncio.Task[None] | None = None
         # Set by the PortAudio thread when the user interrupts an answer. The
         # replayed pre-roll is already in the input queue; the next turn must
         # not discard it as stale audio.
@@ -1004,6 +1022,8 @@ class KakarotLiveService:
         self._stop.set()
         if self._summary_task is not None and not self._summary_task.done():
             self._summary_task.cancel()
+        if self._watchdog_task is not None and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
 
     def _changed(self, **changes: Any) -> None:
         self._on_change(**changes)
@@ -1396,6 +1416,8 @@ class KakarotLiveService:
         self._initialized.set()
         self._connected = True
         self._changed(connected=True)
+        # Watch for stalled requests for the lifetime of the service.
+        self._watchdog_task = asyncio.create_task(self._watch_connection())
 
         while not self._stop.is_set():
             # An initialized in-daemon wake listener owns microphone framing and
@@ -1500,8 +1522,25 @@ class KakarotLiveService:
         # The fallback threshold lives above typical laptop fan noise; Silero
         # handles quiet or soft speech when it is available.
         fallback_threshold = max(0.03, self._vad_threshold)
+        # A follow-up window applies to exactly one capture, the one that
+        # follows an answer. Later turns are unaffected.
+        follow_up_deadline = self._follow_up_deadline
+        self._follow_up_deadline = None
 
         while not self._stop.is_set():
+            if (
+                not speech_started
+                and follow_up_deadline is not None
+                and asyncio.get_running_loop().time() >= follow_up_deadline
+            ):
+                # Nothing was said inside the window: close the gate instead
+                # of leaving the microphone open until the user mutes it.
+                LOGGER.info(
+                    "No follow-up speech within the window; auto-muting."
+                )
+                self._audio.set_muted(True)
+                self._changed(muted=True)
+                return b""
             if self._audio.wake_word_active:
                 # The wake worker came online during this capture; it now owns
                 # the microphone and its own command VAD.
@@ -1542,6 +1581,7 @@ class KakarotLiveService:
                     voice_run += 1
                     if voice_run >= 2:
                         speech_started = True
+                        follow_up_deadline = None
                         frames.extend(pre_roll)
                         total_bytes = sum(len(frame) for frame in frames)
                         speech_frames = len(frames)
@@ -1605,6 +1645,119 @@ class KakarotLiveService:
         ]
         return available or candidates
 
+    # -- connection watchdog & recovery ----------------------------------
+
+    async def _watch_connection(self) -> None:
+        """Flag a stalled Gemini request and pause the audio pipeline.
+
+        With the stateless REST transport a "chunk" is the response itself, so
+        the watchdog measures the time the current request has been in flight
+        without an answer. The notification speaks at most once per turn; the
+        recovery layer runs when the attempt timeout finally fires.
+        """
+        while not self._stop.is_set():
+            await asyncio.sleep(0.5)
+            await self._check_stall()
+
+    async def _check_stall(self, now: float | None = None) -> bool:
+        """Flag one stalled request; return True when this call detected it."""
+        started = self._request_active_since
+        if started is None or self._stall_notified:
+            return False
+        stalled_for = (time.monotonic() if now is None else now) - started
+        if stalled_for < STALL_WATCHDOG_SECONDS:
+            return False
+        self._stall_notified = True
+        LOGGER.warning(
+            "Gemini request stalled for %.1fs; marking connection unstable.",
+            stalled_for,
+        )
+        self._changed(unstable=True)
+        self._audio.set_muted(True)
+        self._changed(muted=True)
+        await self.speak(STALL_NOTICE)
+        return True
+
+    @staticmethod
+    def _recoverable_generation_error(exc: BaseException) -> bool:
+        """Whether one client re-initialization and retry can plausibly help.
+
+        A quota 429 is not a stalled connection: ``_generate`` already spent its
+        retry budget on it, and the reconnect notice would be a lie. Recovery is
+        limited to transport faults and 5xx failures.
+        """
+
+        def transport(error: BaseException) -> bool:
+            if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+                return True
+            name = type(error).__name__
+            return "Timeout" in name or "Connection" in name or name in {
+                "ConnectError",
+                "ReadError",
+                "WriteError",
+                "RemoteProtocolError",
+            }
+
+        if transport(exc):
+            return True
+        cause = exc.__cause__
+        if not isinstance(exc, RuntimeError) or cause is None:
+            return False
+        if transport(cause):
+            return True
+        return _status_code(cause) in {500, 502, 503, 504}
+
+    async def _recover_connection(self) -> None:
+        """Announce the stall, rebuild the client, and clear cooldowns."""
+        # The failed attempt published an error that would keep the health LED
+        # red. Reconnecting is a warning, not a failure: clear the error so the
+        # UI can show amber until the retry decides the outcome.
+        self._changed(unstable=True, error="")
+        self._audio.set_muted(True)
+        self._changed(muted=True)
+        if not self._stall_notified:
+            self._stall_notified = True
+            await self.speak(STALL_NOTICE)
+        try:
+            from google import genai
+
+            self._client = genai.Client(api_key=self._api_key).aio
+            self._model_cooldowns.clear()
+            self._tts_model_cooldowns.clear()
+            self._request_active_since = None
+            LOGGER.info("Gemini client re-initialized after a connection stall.")
+        except Exception as exc:  # noqa: BLE001 - the retry may still succeed
+            LOGGER.error("Gemini client re-initialization failed: %s", exc)
+
+    async def _generate_with_recovery(
+        self, contents: list[Any], config: Any
+    ) -> Any:
+        """Generate once, with a single client re-init and retry on failure."""
+        try:
+            response = await self._generate(contents, config)
+        except Exception as exc:
+            if (
+                self._stop.is_set()
+                or self._recovery_attempted
+                or not self._recoverable_generation_error(exc)
+            ):
+                raise
+            self._recovery_attempted = True
+            LOGGER.warning("Gemini request failed (%s); attempting recovery.", exc)
+            await self._recover_connection()
+            try:
+                response = await self._generate(contents, config)
+            except Exception as retry_exc:
+                LOGGER.error("Recovery retry failed: %s", retry_exc)
+                self._changed(unstable=False, error=RECONNECT_FAILED_NOTICE)
+                await self.speak(RECONNECT_FAILED_NOTICE)
+                raise retry_exc from exc
+            self._changed(unstable=False, error="")
+            LOGGER.info("Recovery retry succeeded.")
+        else:
+            self._changed(unstable=False)
+        return response
+
     async def _generate(self, contents: list[Any], config: Any) -> Any:
         """One unary REST call, retrying only what retrying can fix.
 
@@ -1633,6 +1786,8 @@ class KakarotLiveService:
                 # own full fast-fail window, not the primary's depleted timer.
                 attempt_timeout = min(GENERATE_ATTEMPT_TIMEOUT_SECONDS, remaining)
                 self._turn_usage.begin_request()
+                # The watchdog compares this against STALL_WATCHDOG_SECONDS.
+                self._request_active_since = time.monotonic()
                 try:
                     response = await asyncio.wait_for(
                         self._client.models.generate_content(
@@ -1704,10 +1859,12 @@ class KakarotLiveService:
                         getattr(response, "usage_metadata", None)
                     )
                     self._changed(error="")
+                    self._request_active_since = None
                     return response
         # A silent turn is worse than a visible one: surface why the answer is
         # missing instead of dropping it on the floor. Sanitize before both the
         # state snapshot and the exception reach the UI/log surface.
+        self._request_active_since = None
         message = sanitize_text(str(error))[:300] or "Gemini returned no response"
         self._changed(error=message)
         raise RuntimeError(message) from error
@@ -1888,6 +2045,9 @@ class KakarotLiveService:
             LOGGER.warning("No output audio device; answer remains text-only.")
             return
 
+        # SPEAKING outranks the microphone gate in ``derive_phase``: the mic is
+        # muted while the answer plays, so the UI must not show IDLE_MUTED.
+        self._changed(speaking=True)
         was_muted = bool(getattr(self._audio, "muted", True))
         # Close the capture gate before synthesis, not after it. The old order
         # reopened the microphone first, so the model's own voice entered the
@@ -1959,6 +2119,11 @@ class KakarotLiveService:
                 self._audio.stop_playback_monitor()
             if not self._stop.is_set():
                 await self._wait_output_drained()
+                # The output listener reports silence as soon as the queue
+                # drains, but the echo-suppression tail is still part of the
+                # answer. Keep SPEAKING on screen until the gate decision so
+                # the bubble does not blink through IDLE_MUTED.
+                self._changed(speaking=True)
                 if not self._follow_up_listening:
                     # The gate is already closed and will stay closed. Do not
                     # wait for a speaker tail here: publishing IDLE_MUTED
@@ -1996,6 +2161,18 @@ class KakarotLiveService:
                         preserve_input=interrupted,
                     )
                     self._changed(muted=bool(restore_muted))
+                    if not restore_muted:
+                        # Open the follow-up window. The capture loop closes it
+                        # again when the window expires without speech.
+                        self._follow_up_deadline = (
+                            asyncio.get_running_loop().time()
+                            + FOLLOW_UP_WINDOW_SECONDS
+                        )
+                        LOGGER.info(
+                            "Follow-up window open for %.0fs.",
+                            FOLLOW_UP_WINDOW_SECONDS,
+                        )
+            self._changed(speaking=False)
 
     async def submit_text(self, text: str) -> str:
         """Submit typed text through the same conversational/tool pipeline."""
@@ -2051,7 +2228,9 @@ class KakarotLiveService:
         # post-answer mute and a user mute requested while the model is thinking.
         self._audio.set_muted(True)
         self._audio.discard_input()
-        self._changed(processing=True, muted=True)
+        # A new turn starts in THINKING; a leftover tool name from the previous
+        # turn must not leak into this phase.
+        self._changed(processing=True, muted=True, tool="")
         self.tool_active = True
         try:
             # Keep the one-argument call shape for tests and embedders that
@@ -2075,6 +2254,9 @@ class KakarotLiveService:
     ) -> str:
         """Run one user turn and publish its complete request/token ledger."""
         self._prepare_turn(hint)
+        # Every turn gets one fresh recovery attempt and one stall notice.
+        self._recovery_attempted = False
+        self._stall_notified = False
         self._turn_usage = UsageTotals(turns=1)
         try:
             return await self._run_agent_loop_inner(user_input_content)
@@ -2122,7 +2304,11 @@ class KakarotLiveService:
                 if self._turn_config is not None
                 else self._tool_config
             )
-            response = await self._generate(self._history, config)
+            # THINKING: no tool is running during this model round.
+            self._changed(processing=True, tool="")
+            response = await self._generate_with_recovery(
+                self._history, config
+            )
             self._trim_history()
 
             if response.function_calls:
@@ -2137,6 +2323,7 @@ class KakarotLiveService:
                 # function responses back to the model.
                 for call in response.function_calls:
                     LOGGER.info("Executing tool: %s", call.name)
+                    self._changed(processing=True, tool=str(call.name or ""))
                     args = dict(call.args or {})
                     if call.name == "find_tools":
                         result = self._handle_find_tools(args)
@@ -2224,5 +2411,9 @@ class KakarotLiveService:
             LOGGER.warning("Tool loop exceeded %d rounds for one turn.", MAX_TOOL_ROUNDS)
 
         if answer and not self._stop.is_set():
+            # Generation is over, so the next phase is SPEAKING. Clearing the
+            # thinking flag here keeps the playback tail from falling back to
+            # THINKING once the output listener reports silence.
+            self._changed(processing=False, tool="")
             await self.speak(answer)
         return answer

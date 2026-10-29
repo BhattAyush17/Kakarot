@@ -489,6 +489,7 @@ class FloatingAgencyStrip(QWidget):
 class KakarotMascot(QWidget):
     LED_GREEN = "#10b981"
     LED_RED = "#ef4444"
+    LED_AMBER = "#f59e0b"
 
     def __init__(self):
         super().__init__(None, _mascot_window_flags())
@@ -527,6 +528,11 @@ class KakarotMascot(QWidget):
         self._daemon_error = ""
         self._api_connected = False
         self._last_error = ""
+        self._unstable = False
+        # True while the bubble shows a phase message (THINKING/TOOL_CALL), so
+        # the next phase can replace or clear it even if the audio mode does
+        # not change.
+        self._phase_shown = False
         self._mic_active = False
         self._speaker_active = True
         self._pending_speaker_muted: bool | None = None
@@ -620,10 +626,11 @@ class KakarotMascot(QWidget):
         self.bubble_layout.setContentsMargins(8, 5, 8, 5)
         self.bubble_layout.setSpacing(7)
         self.bubble.setStyleSheet(
-            "#speechBubble { color:#f4f4f5; background:rgba(24,24,27,242); "
-            "border:1px solid #3f3f46; border-radius:10px; }"
-            "#speechBubble QLabel { color:#f4f4f5; background:transparent; "
-            "border:0; padding:0; font:9pt sans-serif; }"
+            "#speechBubble { background-color: rgba(0, 0, 0, 0.85); "
+            "color: #ffffff; border: 1px solid #ffffff; border-radius: 0px; "
+            "font-family: monospace; padding: 4px 8px; }"
+            "#speechBubble QLabel { color:#ffffff; background:transparent; "
+            "border:0; padding:0; font-family: monospace; font-size:9pt; }"
         )
         self.bubble_waveform = AudioWaveformWidget(self.bubble)
         self.bubble_waveform.decayed.connect(self._on_waveform_decayed)
@@ -727,6 +734,11 @@ class KakarotMascot(QWidget):
             )
         if self._last_error.strip():
             return self.LED_RED, f"Kakarot is unhealthy: {self._last_error.strip()}"
+        if self._unstable:
+            return (
+                self.LED_AMBER,
+                "Gemini connection is unstable; reconnecting.",
+            )
         if not self._api_connected:
             return (
                 self.LED_RED,
@@ -832,7 +844,7 @@ class KakarotMascot(QWidget):
         if level is not None:
             self.bubble_waveform.update_levels([level] * 4)
         if show:
-            label = "Speaking..." if mode == "speaking" else "Listening..."
+            label = "[+] Speaking..." if mode == "speaking" else "[*] Listening..."
             self.show_message(label, persistent=True)
 
     def _on_waveform_decayed(self):
@@ -902,10 +914,12 @@ class KakarotMascot(QWidget):
                 self._daemon_connected,
                 self._api_connected,
                 self._last_error,
+                self._unstable,
             )
             self._daemon_connected = True
             self._daemon_error = ""
             self._last_error = str(state.get("error") or "").strip()
+            self._unstable = bool(state.get("unstable"))
             if "connected" in state:
                 self._api_connected = bool(state["connected"])
             if "output_muted" in state:
@@ -921,12 +935,23 @@ class KakarotMascot(QWidget):
             if self._last_error or state.get("phase") == "ERROR":
                 self._api_connected = False
             speaking = bool(state.get("speaking"))
+            phase = str(state.get("phase") or "")
+            tool_name = str(state.get("tool") or "").strip()
             next_mode = (
                 "speaking" if speaking
                 else "listening" if self._mic_active
                 else "idle"
             )
-            if next_mode != self._audio_mode:
+            if phase == "TOOL_CALL" and tool_name:
+                self.show_message(
+                    f"[>] Running: {tool_name[:40]}...", persistent=True
+                )
+                self._phase_shown = True
+            elif phase == "THINKING":
+                self.show_message("[~] Processing...", persistent=True)
+                self._phase_shown = True
+            elif self._phase_shown or next_mode != self._audio_mode:
+                self._phase_shown = False
                 self._set_audio_mode(
                     next_mode,
                     level=state.get("audio_level", state.get("rms")),
@@ -935,6 +960,7 @@ class KakarotMascot(QWidget):
                 self._daemon_connected,
                 self._api_connected,
                 self._last_error,
+                self._unstable,
             )
             if health_before != health_after:
                 self._update_health()

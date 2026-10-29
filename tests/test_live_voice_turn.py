@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 import struct
 from collections import deque
 from types import SimpleNamespace
@@ -618,3 +619,239 @@ def test_agent_loop_executes_all_function_calls_in_order() -> None:
         "manage_desktop_settings",
     ]
     assert all(response.response["result"]["ok"] for response in function_responses)
+
+
+# -- granular phases, connection watchdog, recovery, follow-up window ------
+
+from kakarot_daemon.state import DaemonState
+
+
+def _tracked_service(
+    audio: FakeAudio, *, follow_up_listening: bool = False
+) -> tuple[KakarotLiveService, list[dict[str, Any]]]:
+    changes: list[dict[str, Any]] = []
+    service = KakarotLiveService(
+        api_key="test",
+        model="test-model",
+        audio=audio,
+        tools=SimpleNamespace(),
+        tts_model="test-tts",
+        follow_up_listening=follow_up_listening,
+        on_change=lambda **change: changes.append(change),
+    )
+    service._vad_ready = True
+    service._vad = None
+    return service, changes
+
+
+def test_derive_phase_reports_granular_activity() -> None:
+    state = DaemonState()
+    state.apply(connected=True)
+    assert state.snapshot()["phase"] == "IDLE_MUTED"
+
+    state.apply(muted=False)
+    assert state.snapshot()["phase"] == "LISTENING"
+
+    state.apply(processing=True)
+    assert state.snapshot()["phase"] == "THINKING"
+
+    state.apply(tool="manage_network")
+    assert state.snapshot()["phase"] == "TOOL_CALL"
+    assert state.snapshot()["tool"] == "manage_network"
+
+    state.apply(speaking=True)
+    assert state.snapshot()["phase"] == "SPEAKING"
+
+    state.apply(unstable=True)
+    assert state.snapshot()["phase"] == "UNSTABLE"
+
+    state.apply(error="boom")
+    assert state.snapshot()["phase"] == "ERROR"
+
+
+def test_watchdog_flags_a_stalled_request_and_pauses_the_pipeline() -> None:
+    audio = FakeAudio()
+    service, changes = _tracked_service(audio)
+    spoken: list[str] = []
+
+    async def fake_speak(text: str) -> None:
+        spoken.append(text)
+
+    service.speak = fake_speak
+    service._request_active_since = (
+        time.monotonic() - live_module.STALL_WATCHDOG_SECONDS - 1.0
+    )
+
+    assert asyncio.run(service._check_stall()) is True
+    assert {"unstable": True} in changes
+    assert audio.muted is True
+    assert {"muted": True} in changes
+    assert spoken == [live_module.STALL_NOTICE]
+
+    # The notice is spoken once per turn, not once per watchdog tick.
+    assert asyncio.run(service._check_stall()) is False
+    assert spoken == [live_module.STALL_NOTICE]
+
+
+def test_watchdog_ignores_a_fast_request() -> None:
+    service, changes = _tracked_service(FakeAudio())
+    service._request_active_since = time.monotonic()
+
+    assert asyncio.run(service._check_stall()) is False
+    assert changes == []
+
+
+def test_recovery_retries_once_after_reinitializing_the_client() -> None:
+    audio = FakeAudio()
+    service, changes = _tracked_service(audio)
+    attempts: list[int] = []
+    recovered: list[bool] = []
+
+    async def flaky_generate(_contents: list[Any], _config: Any) -> str:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise TimeoutError("stalled")
+        return "response"
+
+    async def fake_recover() -> None:
+        recovered.append(True)
+        service._changed(unstable=True, error="")
+
+    service._generate = flaky_generate
+    service._recover_connection = fake_recover
+
+    result = asyncio.run(service._generate_with_recovery([], None))
+
+    assert result == "response"
+    assert len(attempts) == 2
+    assert recovered == [True]
+    assert {"unstable": True, "error": ""} in changes
+    assert {"unstable": False, "error": ""} in changes
+
+
+def test_recovery_failure_speaks_and_reports_the_error_state() -> None:
+    service, changes = _tracked_service(FakeAudio())
+    spoken: list[str] = []
+
+    async def always_fails(_contents: list[Any], _config: Any) -> str:
+        raise TimeoutError("down")
+
+    async def fake_recover() -> None:
+        service._changed(unstable=True, error="")
+
+    async def fake_speak(text: str) -> None:
+        spoken.append(text)
+
+    service._generate = always_fails
+    service._recover_connection = fake_recover
+    service.speak = fake_speak
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(service._generate_with_recovery([], None))
+
+    assert spoken == [live_module.RECONNECT_FAILED_NOTICE]
+    assert {
+        "unstable": False,
+        "error": live_module.RECONNECT_FAILED_NOTICE,
+    } in changes
+
+
+def test_non_connection_errors_are_not_retried() -> None:
+    service, changes = _tracked_service(FakeAudio())
+    attempts: list[int] = []
+
+    async def bad_request(_contents: list[Any], _config: Any) -> str:
+        attempts.append(1)
+        raise ValueError("bad request")
+
+    service._generate = bad_request
+
+    with pytest.raises(ValueError):
+        asyncio.run(service._generate_with_recovery([], None))
+
+    assert len(attempts) == 1
+    assert changes == []
+
+
+def test_recover_connection_rebuilds_the_client_and_clears_cooldowns() -> None:
+    service, changes = _tracked_service(FakeAudio())
+    original = service._client = object()
+    service._model_cooldowns["m"] = time.monotonic() + 60
+    service._tts_model_cooldowns["t"] = time.monotonic() + 60
+    spoken: list[str] = []
+
+    async def fake_speak(text: str) -> None:
+        spoken.append(text)
+
+    service.speak = fake_speak
+    asyncio.run(service._recover_connection())
+
+    assert service._client is not original
+    assert service._model_cooldowns == {}
+    assert service._tts_model_cooldowns == {}
+    assert service._request_active_since is None
+    assert spoken == [live_module.STALL_NOTICE]
+    assert {"unstable": True, "error": ""} in changes
+
+
+def test_submit_content_publishes_a_fresh_thinking_phase() -> None:
+    service, changes = _tracked_service(FakeAudio())
+    service._initialized.set()
+    service._types = types
+    service._client = SimpleNamespace()
+
+    async def fake_agent_loop(_content: Any) -> str:
+        return "answer"
+
+    service.agent_loop = fake_agent_loop
+    content = types.Content(role="user", parts=[types.Part(text="hello")])
+    asyncio.run(service._submit_content(content))
+
+    assert {"processing": True, "muted": True, "tool": ""} in changes
+    assert {"processing": False} in changes
+
+
+def test_follow_up_window_auto_mutes_without_speech() -> None:
+    audio = FakeAudio([_frame(0.0001)] * 200)
+    service, changes = _tracked_service(audio, follow_up_listening=True)
+
+    async def run() -> bytes:
+        service._follow_up_deadline = asyncio.get_running_loop().time() - 0.1
+        return await asyncio.wait_for(service._capture_voice_turn(), timeout=1.0)
+
+    assert asyncio.run(run()) == b""
+    assert audio.muted is True
+    assert {"muted": True} in changes
+
+
+def test_speech_inside_follow_up_window_reopens_a_turn() -> None:
+    audio = FakeAudio([_frame(0.10)] * 10 + [_frame(0.0001)] * 30)
+    service, _ = _tracked_service(audio, follow_up_listening=True)
+
+    async def run() -> bytes:
+        service._follow_up_deadline = asyncio.get_running_loop().time() + 4.0
+        return await asyncio.wait_for(service._capture_voice_turn(), timeout=2.0)
+
+    pcm = asyncio.run(run())
+
+    assert pcm
+    assert service._follow_up_deadline is None
+    assert audio.muted is False
+
+
+def test_speak_arms_the_follow_up_window_and_broadcasts_speaking() -> None:
+    audio = FakeAudio()
+    service, changes = _tracked_service(audio, follow_up_listening=True)
+    service._types = types
+
+    async def fake_synthesize(_text: str) -> bytes:
+        return _frame(0.1) * 2
+
+    service._synthesize_speech = fake_synthesize
+    with patch.object(live_module, "PLAYBACK_TAIL_SECONDS", 0.0):
+        asyncio.run(service.speak("Hello."))
+
+    assert audio.muted is False
+    assert service._follow_up_deadline is not None
+    assert {"speaking": True} in changes
+    assert {"speaking": False} in changes
