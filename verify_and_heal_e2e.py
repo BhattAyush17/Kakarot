@@ -38,7 +38,9 @@ def record(test: str, subsystem: str, passed: bool, note: str = "") -> None:
 
 # ------------------------------------------------------------- A. GUI
 APP_ID = "io.github.kakarot"
-DESKTOP_ID = f"{APP_ID}.desktop"
+# The floating mascot is the installed launcher; the legacy
+# ``io.github.kakarot.desktop`` entry (assistant.py) was retired.
+DESKTOP_ID = "kakarot-mascot.desktop"
 DAEMON_BUS = "io.github.kakarot.Daemon"
 DAEMON_PATH = "/io/github/kakarot/Daemon"
 
@@ -59,18 +61,19 @@ def test_desktop_registration() -> None:
 
     text = desktop.read_text()
     record("Type=Application", "gui", "Type=Application" in text)
-    # DBusActivatable lets GNOME launch the app over the bus instead of
-    # spawning a duplicate process; StartupNotify drives the loading cursor.
+    # The launcher must start the real floating front end, not a retired
+    # legacy entry point. D-Bus activation is covered by the service-file probe
+    # in test_dbus_activation.
     record(
-        "DBusActivatable=true",
+        "launcher runs the mascot overlay",
         "gui",
-        "DBusActivatable=true" in text,
+        "kakarot_overlay/mascot.py" in text,
     )
     record("StartupNotify=true", "gui", "StartupNotify=true" in text)
     record(
-        "Categories=Utility;System;",
+        "Categories include Utility",
         "gui",
-        "Categories=Utility;System;" in text,
+        bool(re.search(r"^Categories=.*\bUtility;", text, re.M)),
     )
     m_icon = re.search(r"^Icon=(\S+)$", text, re.M)
     ok_icon = False
@@ -234,10 +237,18 @@ def _gui_python() -> str:
 
 
 def _name_owned(name: str) -> bool:
+    # ``busctl list`` also prints activatable names that no process owns yet
+    # (PID column "-"). Treating those as "running" made the quit probe start
+    # a second front end over D-Bus activation and then wait for a reply that
+    # never came.
     listed = subprocess.run(
-        ["busctl", "--user", "list"], capture_output=True, text=True
+        ["busctl", "--user", "list", "--no-legend"], capture_output=True, text=True
     ).stdout
-    return any(line.split()[0:1] == [name] for line in listed.splitlines() if line.split())
+    for line in listed.splitlines():
+        fields = line.split()
+        if fields and fields[0] == name:
+            return len(fields) > 1 and fields[1] != "-"
+    return False
 
 
 def _owns_name(name: str, pid: int) -> bool:

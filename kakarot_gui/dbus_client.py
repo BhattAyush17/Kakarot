@@ -30,6 +30,9 @@ class DaemonClient:
         self._handlers: list = []
         self._retry_source = 0
         self._subscription = 0
+        # ``stop`` runs even when ``start`` never did (early quit), so the
+        # name-watch source must exist from construction time.
+        self._watch_name_source = 0
 
     # -- lifecycle --------------------------------------------------------
 
