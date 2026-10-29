@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import logging
 import threading
 import time
 from collections import deque
@@ -12,6 +13,7 @@ import numpy as np
 
 SESSION_RATE = 24000
 WAKE_WORD_RATE = 16000
+LOGGER = logging.getLogger(__name__)
 
 
 WakeDetectedCallback = Callable[[str, float], None]
@@ -59,6 +61,7 @@ class WakeWordListener:
         config: dict[str, Any],
         on_detected: WakeDetectedCallback,
         on_command_ready: CommandReadyCallback,
+        session_rate: int = SESSION_RATE,
     ):
         self.enabled = bool(config.get("enabled", False))
         self.model_names = _list_value(config.get("model_names") or ["hey jarvis"])
@@ -76,15 +79,42 @@ class WakeWordListener:
         self.auto_download_models = bool(config.get("auto_download_models", True))
         self.on_detected = on_detected
         self.on_command_ready = on_command_ready
+        self.session_rate = max(1, int(session_rate))
         self.queue: queue.Queue[tuple[bytes, bytes, float]] = queue.Queue(maxsize=100)
+        self._reload_queue: queue.Queue[tuple[str, ...]] = queue.Queue(maxsize=1)
         self.thread: threading.Thread | None = None
         self.stop_event = threading.Event()
         self.ready = False
 
+    def request_model_reload(self, model_paths: str | Path | list[str | Path]) -> bool:
+        """Queue one or more ONNX models for loading between captured commands."""
+        if isinstance(model_paths, (str, Path)):
+            model_paths = [model_paths]
+        paths = tuple(str(Path(path).expanduser()) for path in model_paths)
+        if (
+            not paths
+            or not all(Path(path).is_file() for path in paths)
+            or self.thread is None
+            or not self.thread.is_alive()
+        ):
+            return False
+        try:
+            self._reload_queue.put_nowait(paths)
+        except queue.Full:
+            try:
+                self._reload_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._reload_queue.put_nowait(paths)
+            except queue.Full:
+                return False
+        return True
+
     def start(self) -> None:
         if not self.enabled or self.thread is not None:
             return
-        self.thread = threading.Thread(target=self._run, name="BitMonWakeWord", daemon=True)
+        self.thread = threading.Thread(target=self._run, name="KakarotWakeWord", daemon=True)
         self.thread.start()
 
     def stop(self) -> None:
@@ -109,6 +139,8 @@ class WakeWordListener:
                 pass
 
     def _create_model(self):
+        import inspect
+
         from openwakeword.model import Model
 
         if self.auto_download_models and self.model_names and not self.model_paths:
@@ -117,7 +149,17 @@ class WakeWordListener:
             openwakeword.utils.download_models()
 
         wakeword_models = self.model_paths or self.model_names
-        kwargs: dict[str, Any] = {"wakeword_models": wakeword_models}
+        parameters = inspect.signature(Model.__init__).parameters
+        # openWakeWord 0.4 uses ``wakeword_model_paths``; 0.6 renamed the
+        # argument to ``wakeword_models``. The previous unconditional keyword
+        # made every 0.4 installation fail before the microphone was usable.
+        if "wakeword_models" in parameters:
+            model_key = "wakeword_models"
+        elif "wakeword_model_paths" in parameters:
+            model_key = "wakeword_model_paths"
+        else:
+            model_key = "wakeword_models"
+        kwargs: dict[str, Any] = {model_key: wakeword_models}
         if self.vad_threshold > 0:
             kwargs["vad_threshold"] = self.vad_threshold
         # Match the inference framework to the selected file type: .tflite
@@ -125,12 +167,22 @@ class WakeWordListener:
         framework = "onnx"
         if any(str(path).lower().endswith(".tflite") for path in self.model_paths):
             framework = "tflite"
-        try:
+        if "inference_framework" in parameters:
             kwargs["inference_framework"] = framework
+        try:
             return Model(**kwargs)
         except TypeError:
+            # Some distributions expose **kwargs without advertising the
+            # framework argument. Try the path argument, then the old name.
             kwargs.pop("inference_framework", None)
-            return Model(**kwargs)
+            try:
+                return Model(**kwargs)
+            except TypeError:
+                if model_key == "wakeword_models":
+                    kwargs["wakeword_model_paths"] = kwargs.pop("wakeword_models")
+                else:
+                    kwargs["wakeword_models"] = kwargs.pop("wakeword_model_paths")
+                return Model(**kwargs)
 
     def _drain_queue(self) -> None:
         while True:
@@ -158,7 +210,7 @@ class WakeWordListener:
         try:
             model = self._create_model()
         except Exception as exc:
-            print(f"[WakeWord] disabled: {exc}")
+            LOGGER.warning("Wake-word inference unavailable; using push-to-talk: %s", exc)
             self.enabled = False
             self.thread = None
             return
@@ -166,7 +218,7 @@ class WakeWordListener:
         self.ready = True
         print("[WakeWord] listening")
         recent_pcm = bytearray()
-        max_recent_bytes = max(1, int(self.preroll_seconds * SESSION_RATE * 2))
+        max_recent_bytes = max(1, int(self.preroll_seconds * self.session_rate * 2))
         command_buffer = bytearray()
         capturing = False
         speech_seen = False
@@ -181,6 +233,32 @@ class WakeWordListener:
         recent_rms: deque[float] = deque(maxlen=80)
 
         while not self.stop_event.is_set():
+            if not capturing:
+                try:
+                    replacement_paths = self._reload_queue.get_nowait()
+                except queue.Empty:
+                    replacement_paths = ()
+                if replacement_paths:
+                    previous_paths, previous_names = self.model_paths, self.model_names
+                    self.model_paths = list(replacement_paths)
+                    self.model_names = []
+                    try:
+                        replacement_model = self._create_model()
+                    except Exception as exc:
+                        self.model_paths, self.model_names = previous_paths, previous_names
+                        LOGGER.warning(
+                            "Kakarot wake model reload failed; retaining current model: %s",
+                            exc,
+                        )
+                    else:
+                        model = replacement_model
+                        self._reset_model(model)
+                        recent_pcm.clear()
+                        recent_rms.clear()
+                        self._drain_queue()
+                        self.ready = True
+                        LOGGER.info("Hot-loaded Kakarot wake model(s): %s", replacement_paths)
+
             try:
                 pcm24, pcm16, rms = self.queue.get(timeout=0.2)
             except queue.Empty:
@@ -190,7 +268,7 @@ class WakeWordListener:
             if len(recent_pcm) > max_recent_bytes:
                 del recent_pcm[: len(recent_pcm) - max_recent_bytes]
 
-            frame_seconds = (len(pcm24) // 2) / float(SESSION_RATE)
+            frame_seconds = (len(pcm24) // 2) / float(self.session_rate)
 
             if capturing:
                 command_buffer.extend(pcm24)

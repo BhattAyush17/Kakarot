@@ -1,8 +1,8 @@
 @echo off
-:: BitMon - one-click start. Double-click this file to launch everything.
+:: Kakarot - one-click start. Double-click this file to launch everything.
 :: It runs the launcher, which sets up the virtual environment on first run,
 :: starts the backend and the persona overlay, then minimizes to the tray.
-title BitMon
+title Kakarot
 cd /d "%~dp0"
 
 set "VENV_PYW=%~dp0venv\Scripts\pythonw.exe"

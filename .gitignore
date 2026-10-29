@@ -1,5 +1,5 @@
 # ==========================================
-#  BitMon backend  (this folder is the repo root)
+# Kakarot application workspace
 # ==========================================
 
 # Python caches / bytecode
@@ -13,7 +13,6 @@ venv/
 env/
 
 # Local user config with personal data, tokens, private URLs or device names
-bitmon_config.json
 # persona_config.json is tracked on purpose: it is the default persona base.
 persona/personas/
 persona/.sprite_backup/
@@ -33,7 +32,6 @@ logs/
 config_backups/
 cache/
 .local_token
-.bitmon_first_run_done
 *.log
 
 # Generated launcher shortcut
@@ -51,3 +49,12 @@ releases/
 Thumbs.db
 desktop.ini
 .DS_Store
+.aider*
+
+# Local runtime data and one-off artifacts (never commit)
+kakarot_config.json
+kakarot_recordings/
+kakarot_calibration/
+notebooks/
+patch_*.py
+watermarked_img_*

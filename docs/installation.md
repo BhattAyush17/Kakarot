@@ -4,7 +4,7 @@ This guide takes you from a clean Windows machine to a talking pet on your
 desktop.
 
 > [!NOTE]
-> BitMon targets **Windows 10/11**. The persona overlay, hotkey capture and the
+> Kakarot targets **Windows 10/11**. The persona overlay, hotkey capture and the
 > launcher are built and tested for Windows. The backend itself is cross-platform
 > Python, but the desktop experience assumes Windows.
 
@@ -28,12 +28,12 @@ provider you choose. See [Providers & requirements](providers.md).
 
 ## 2. Get the code
 
-Clone or download this `backend` folder. Everything BitMon needs lives inside
+Clone or download this `backend` folder. Everything Kakarot needs lives inside
 it — the launcher, the config UI, the persona overlay and the bundled assets.
 
 ```powershell
-git clone https://github.com/beped/BitMon
-cd BitMon
+git clone https://github.com/beped/Kakarot
+cd Kakarot
 ```
 
 ---
@@ -120,18 +120,18 @@ Everything is covered field-by-field in
 
 ## 6. Where your files live
 
-When you start BitMon **from source** (the normal case), runtime files are kept
+When you start Kakarot **from source** (the normal case), runtime files are kept
 next to the backend:
 
 | File / folder | What it is |
 |---|---|
 | `venv/` | The Python virtual environment |
-| `bitmon_config.json` | Your saved settings (created from the example on first run) |
+| `kakarot_config.json` | Your saved settings (created from the example on first run) |
 | `logs/` | Backend, persona and setup logs |
 | `cache/` | Integration caches (e.g. Home Assistant) |
 | `persona/` packages | Your personas and their sprites |
 
-Your **Inworld API key is not** in `bitmon_config.json` — it is stored in the
+Your **Inworld API key is not** in `kakarot_config.json` — it is stored in the
 Windows Credential Manager via `keyring`.
 
 > These paths can be relocated with environment variables — see

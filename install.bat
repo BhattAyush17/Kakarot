@@ -1,12 +1,12 @@
 @echo off
 :: ============================================================
-::  BitMon - first-time installer
+::  Kakarot - first-time installer
 ::  Double-click this file once to set everything up.
-::  After that, open BitMon from the "BitMon Launcher" shortcut
+::  After that, open Kakarot from the "Kakarot Launcher" shortcut
 ::  it creates, or by double-clicking start.bat.
 :: ============================================================
 setlocal
-title BitMon installer
+title Kakarot installer
 cd /d "%~dp0"
 
 set "ROOT=%~dp0"
@@ -17,7 +17,7 @@ set "VENV_PYW=%VENV%\Scripts\pythonw.exe"
 
 echo.
 echo ============================================
-echo   BitMon - first-time setup
+echo   Kakarot - first-time setup
 echo ============================================
 echo.
 
@@ -71,26 +71,26 @@ if "%GPU%"=="2" (
     echo.
 )
 
-echo Installing BitMon dependencies - this can take a few minutes ...
+echo Installing Kakarot dependencies - this can take a few minutes ...
 "%VENV_PY%" -m pip install -r "%ROOT%requirements.txt"
 if errorlevel 1 goto :pipfail
 
 :: Record that dependencies are installed so the first launch skips re-installing.
-"%VENV_PY%" -c "import hashlib,time;from pathlib import Path;bk=Path(r'%ROOTNB%');d=hashlib.sha256();[(d.update(fn.encode()),d.update(b'\n'),d.update((bk/fn).read_bytes()),d.update(b'\n')) for fn in ('requirements.txt','requirements-core.txt') if (bk/fn).exists()];v=bk/'venv';(v/'.bitmon_requirements_installed').write_text(str(time.time()));(v/'.bitmon_requirements_hash').write_text(d.hexdigest())" 2>nul
+"%VENV_PY%" -c "import hashlib,time;from pathlib import Path;bk=Path(r'%ROOTNB%');d=hashlib.sha256();[(d.update(fn.encode()),d.update(b'\n'),d.update((bk/fn).read_bytes()),d.update(b'\n')) for fn in ('requirements.txt','requirements-core.txt') if (bk/fn).exists()];v=bk/'venv';(v/'.kakarot_requirements_installed').write_text(str(time.time()));(v/'.kakarot_requirements_hash').write_text(d.hexdigest())" 2>nul
 
-:: 6) Create a nice "BitMon Launcher" shortcut (Desktop + this folder) ---------
-echo Creating the BitMon Launcher shortcut ...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $targets=@([IO.Path]::Combine([Environment]::GetFolderPath('Desktop'),'BitMon Launcher.lnk'), (Join-Path '%ROOT%' 'BitMon Launcher.lnk')); foreach($t in $targets){ $s=$ws.CreateShortcut($t); $s.TargetPath='%VENV_PYW%'; $s.Arguments='launcher.py'; $s.WorkingDirectory='%ROOT%'; $s.IconLocation='%ROOT%web\app-icon.ico'; $s.Description='BitMon Launcher'; $s.Save() }" 2>nul
+:: 6) Create a nice "Kakarot Launcher" shortcut (Desktop + this folder) ---------
+echo Creating the Kakarot Launcher shortcut ...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ws=New-Object -ComObject WScript.Shell; $targets=@([IO.Path]::Combine([Environment]::GetFolderPath('Desktop'),'Kakarot Launcher.lnk'), (Join-Path '%ROOT%' 'Kakarot Launcher.lnk')); foreach($t in $targets){ $s=$ws.CreateShortcut($t); $s.TargetPath='%VENV_PYW%'; $s.Arguments='launcher.py'; $s.WorkingDirectory='%ROOT%'; $s.IconLocation='%ROOT%web\app-icon.ico'; $s.Description='Kakarot Launcher'; $s.Save() }" 2>nul
 
 echo.
 echo ============================================
-echo   Done! BitMon is installed.
-echo   Open it from the "BitMon Launcher" shortcut
+echo   Done! Kakarot is installed.
+echo   Open it from the "Kakarot Launcher" shortcut
 echo   on your Desktop, or run start.bat.
 echo ============================================
 echo.
 
-choice /c YN /m "Start BitMon now"
+choice /c YN /m "Start Kakarot now"
 if errorlevel 2 goto :eof
 if exist "%VENV_PYW%" (
     start "" "%VENV_PYW%" "%ROOT%launcher.py"

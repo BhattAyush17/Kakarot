@@ -1,2 +1,2 @@
-# Default install path. Install requirements-gpu.txt first when CUDA wheels are desired.
--r requirements-core.txt
+# Default low-memory Gemini install. It excludes local ML and legacy provider SDKs.
+-r requirements-light.txt

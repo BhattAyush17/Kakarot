@@ -1,6 +1,6 @@
-# BitMon documentation
+# Kakarot documentation
 
-Welcome! This folder is the full manual for BitMon. If you just want to get it
+Welcome! This folder is the full manual for Kakarot. If you just want to get it
 running, start with **Installation** and then skim **The launcher** and
 **Configuration UI**.
 
@@ -28,7 +28,7 @@ running, start with **Installation** and then skim **The launcher** and
 ## Conventions used in these docs
 
 - Commands are written for **Windows PowerShell** (the supported platform).
-- `127.0.0.1:8000` is the default address; if you changed `BITMON_PORT`, adjust
+- `127.0.0.1:8000` is the default address; if you changed `KAKAROT_PORT`, adjust
   accordingly.
 - Settings are referenced by the **tab → label** they appear under in the
   configuration page, e.g. *Model → LLM provider*.

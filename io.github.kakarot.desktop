@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Kakarot
+GenericName=Desktop Agent
+Comment=Autonomous, memory-bounded desktop agent for GNOME
+Exec=/usr/bin/python3 assistant.py
+Icon=io.github.kakarot.Daemon
+Terminal=false
+Categories=Utility;
+Keywords=assistant;agent;automation;voice;
+# The mascot owns io.github.kakarot on the session bus (see
+# io.github.kakarot.service, whose SystemdService= starts kakarot-mascot.service).
+# Activating through D-Bus is what stops GNOME from spawning a second, competing
+# frontend; Exec stays only as the fallback for shells that ignore the bus name.
+DBusActivatable=true
+StartupNotify=true
+X-GNOME-UsesNotifications=true
+StartupWMClass=io.github.kakarot

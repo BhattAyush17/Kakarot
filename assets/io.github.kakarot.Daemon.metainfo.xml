@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 The Kakarot authors -->
+<component type="desktop-application">
+  <id>io.github.kakarot.Daemon</id>
+  <launchable type="desktop-id">io.github.kakarot.desktop</launchable>
+
+  <name>Kakarot</name>
+  <summary>Autonomous, memory-bounded desktop agent for GNOME</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      Kakarot is a local AI desktop agent for GNOME. It listens for voice, plans
+      multi-step tasks, and carries them out on your desktop while everything
+      stays on your machine.
+    </p>
+    <p>
+      A floating mascot shows what it is doing and answers questions in a speech
+      bubble. Right-click it to force listening, run a single command, or update
+      your Gemini API key.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Voice in, spoken replies out, through the daemon</li>
+      <li>Read-only inspection runs instantly; anything mutating waits for your approval</li>
+      <li>Commands run inside a Bubblewrap sandbox with no network by default</li>
+      <li>Secrets are redacted before anything leaves the machine</li>
+      <li>Every autonomous action is written to an auditable log</li>
+    </ul>
+  </description>
+
+  <launchable type="service">io.github.kakarot.Daemon</launchable>
+
+  <categories>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>assistant</keyword>
+    <keyword>agent</keyword>
+    <keyword>automation</keyword>
+    <keyword>voice</keyword>
+  </keywords>
+
+  <provides>
+    <binary>assistant.py</binary>
+    <dbus type="session">io.github.kakarot.Daemon</dbus>
+  </provides>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>voice</control>
+  </recommends>
+
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+
+  <content_rating type="oars-1.1"/>
+
+  <developer id="io.github.kakarot">
+    <name>The Kakarot authors</name>
+  </developer>
+
+  <url type="homepage">https://github.com/tensorttx/Kakarot</url>
+  <url type="bugtracker">https://github.com/tensorttx/Kakarot/issues</url>
+
+  <releases>
+    <release version="0.5.0" date="2026-10-03">
+      <description>
+        <p>Floating mascot front end and a Bubblewrap-sandboxed execute path.</p>
+      </description>
+    </release>
+  </releases>
+</component>

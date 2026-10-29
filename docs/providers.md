@@ -1,6 +1,6 @@
 # Providers & requirements
 
-BitMon's "brain" (the LLM) and its "voice" (TTS) are pluggable. You pick a
+Kakarot's "brain" (the LLM) and its "voice" (TTS) are pluggable. You pick a
 combination on the **Model** tab. This page explains the trade-offs and the
 exact requirements/disclaimers for each, so you know what you're signing up for.
 
@@ -35,7 +35,7 @@ regardless of which provider you pick. Only the LLM and TTS stages change.
 > you will see provider errors in the logs.
 >
 > The key is stored securely in the Windows Credential Manager (via `keyring`),
-> **never** written to `bitmon_config.json`, and the configuration API never
+> **never** written to `kakarot_config.json`, and the configuration API never
 > returns it — it only reports whether one is configured.
 
 ### 2. Local (fully offline)
@@ -57,7 +57,7 @@ regardless of which provider you pick. Only the LLM and TTS stages change.
 
 1. Install [LM Studio](https://lmstudio.ai) and download a chat model.
 2. Start its **local server** (default `http://127.0.0.1:1234/v1`).
-3. In BitMon: **Model → LLM provider → LM Studio**, set the **LM Studio URL**,
+3. In Kakarot: **Model → LLM provider → LM Studio**, set the **LM Studio URL**,
    and click **Refresh** next to *LM Studio model* to list the loaded models.
 4. (Optional) Set a **local vision model** if you want screen analysis offline.
 
@@ -119,8 +119,8 @@ than subsequent ones.
 To explicitly enable the developer endpoints:
 
 ```powershell
-$env:BITMON_ENABLE_DOCS="1"
-$env:BITMON_ENABLE_MCP="1"
+$env:KAKAROT_ENABLE_DOCS="1"
+$env:KAKAROT_ENABLE_MCP="1"
 python main.py
 ```
 

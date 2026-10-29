@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.kakarot
+SystemdService=kakarot-mascot.service
+Exec=/usr/bin/systemctl --user start kakarot-mascot.service

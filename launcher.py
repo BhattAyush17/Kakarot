@@ -1,4 +1,4 @@
-"""BitMon desktop launcher."""
+"""Kakarot desktop launcher."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ LEGACY_NAME = "digi" + "mon"
 
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(f"BITMON_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
+    return os.environ.get(f"KAKAROT_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
 
 
 HOST = _env("HOST", "127.0.0.1")
@@ -53,7 +53,7 @@ def _set_windows_app_id() -> None:
     try:
         import ctypes
 
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("BitMon.Launcher")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Kakarot.Launcher")
     except Exception:
         pass
 
@@ -64,7 +64,7 @@ def _app_data_dir() -> Path:
         return Path(configured)
     if INSTALLED:
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-        return Path(base) / "BitMon"
+        return Path(base) / "Kakarot"
     return LAUNCHER_DIR
 
 
@@ -73,12 +73,12 @@ LOG_DIR = APP_DATA_DIR / "logs"
 # The venv always lives next to the app (the app folder when running from source,
 # LocalAppData when installed). This keeps a published clone fully self-contained.
 VENV_DIR = APP_DATA_DIR / "venv"
-VENV_PYTHON = VENV_DIR / "Scripts" / "python.exe"
-CONFIG_PATH = APP_DATA_DIR / "bitmon_config.json"
+VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+CONFIG_PATH = APP_DATA_DIR / "kakarot_config.json"
 LEGACY_CONFIG_PATH = APP_DATA_DIR / f"{LEGACY_NAME}_config.json"
-FIRST_RUN_MARKER = APP_DATA_DIR / ".bitmon_first_run_done"
+FIRST_RUN_MARKER = APP_DATA_DIR / ".kakarot_first_run_done"
 PYTHON_EXE = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
-install_crash_logger("bitmon-launcher", LOG_DIR)
+install_crash_logger("kakarot-launcher", LOG_DIR)
 
 
 def _relaunch_with_pythonw_if_needed() -> None:
@@ -95,7 +95,7 @@ def _relaunch_with_pythonw_if_needed() -> None:
     if not pythonw.exists():
         return
     env = os.environ.copy()
-    env["BITMON_LAUNCHER_RELAUNCHED"] = "1"
+    env["KAKAROT_LAUNCHER_RELAUNCHED"] = "1"
     subprocess.Popen(
         [str(pythonw), str(Path(__file__).resolve()), *sys.argv[1:]],
         cwd=str(ROOT_DIR),
@@ -161,7 +161,7 @@ def ensure_user_files() -> None:
             return
         except OSError:
             pass
-    example = LAUNCHER_DIR / "bitmon_config.example.json"
+    example = LAUNCHER_DIR / "kakarot_config.example.json"
     if example.exists():
         CONFIG_PATH.write_text(example.read_text(encoding="utf-8"), encoding="utf-8")
 
@@ -177,7 +177,7 @@ def _read_config() -> dict[str, Any]:
 
 def get_character_name() -> str:
     data = _read_config()
-    return str(data.get("character", {}).get("name", "BitMon")).strip() or "BitMon"
+    return str(data.get("character", {}).get("name", "Kakarot")).strip() or "Kakarot"
 
 
 PERSONA_LIBRARY_PATH = LAUNCHER_DIR / "persona" / "personas" / "personas.json"
@@ -284,11 +284,11 @@ class ManagedStartupWorker(QObject):
 
     def _env(self) -> dict[str, str]:
         env = os.environ.copy()
-        env.setdefault("BITMON_HOST", HOST)
-        env.setdefault("BITMON_PORT", str(PORT))
-        env["BITMON_CONFIG_PATH"] = str(CONFIG_PATH)
-        env["BITMON_LOG_DIR"] = str(LOG_DIR)
-        env["BITMON_CACHE_DIR"] = str(APP_DATA_DIR / "cache")
+        env.setdefault("KAKAROT_HOST", HOST)
+        env.setdefault("KAKAROT_PORT", str(PORT))
+        env["KAKAROT_CONFIG_PATH"] = str(CONFIG_PATH)
+        env["KAKAROT_LOG_DIR"] = str(LOG_DIR)
+        env["KAKAROT_CACHE_DIR"] = str(APP_DATA_DIR / "cache")
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
         return env
@@ -312,8 +312,8 @@ class ManagedStartupWorker(QObject):
             subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
             PYTHON_EXE = str(VENV_PYTHON)
 
-        marker = VENV_DIR / ".bitmon_requirements_installed"
-        hash_marker = VENV_DIR / ".bitmon_requirements_hash"
+        marker = VENV_DIR / ".kakarot_requirements_installed"
+        hash_marker = VENV_DIR / ".kakarot_requirements_hash"
         requirement_hash = self._requirements_hash()
         needs_install = (
             REQUIREMENTS.exists()
@@ -664,7 +664,7 @@ class LauncherWindow(QWidget):
         return self.i18n.t(key, values)
 
     def _build(self) -> None:
-        self.setWindowTitle(f"BitMon - {self.char_name}")
+        self.setWindowTitle(f"Kakarot - {self.char_name}")
         if not self._app_icon.isNull():
             self.setWindowIcon(self._app_icon)
         self.setFixedSize(*self.BASIC_SIZE)
@@ -872,7 +872,7 @@ class LauncherWindow(QWidget):
             tray_icon = QIcon(pixmap)
 
         self._tray = QSystemTrayIcon(tray_icon, self)
-        self._tray.setToolTip(f"BitMon - {self.char_name}")
+        self._tray.setToolTip(f"Kakarot - {self.char_name}")
         menu = QMenu()
         menu.setStyleSheet("""
             QMenu {
@@ -973,7 +973,7 @@ class LauncherWindow(QWidget):
         if SILENT:
             return
         self._tray.showMessage(
-            f"BitMon - {self.char_name}",
+            f"Kakarot - {self.char_name}",
             self.t("launcher.runningBackground"),
             QSystemTrayIcon.Information,
             1500,

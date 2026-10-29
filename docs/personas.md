@@ -1,7 +1,7 @@
 # Personas & the animation editor
 
 A **persona** is your pet's body: a set of sprite-sheet **animations** plus the
-config that describes how to play them. BitMon ships with a default persona, and
+config that describes how to play them. Kakarot ships with a default persona, and
 you can build, import, share and switch between as many as you like — all from
 the **Persona** tab.
 

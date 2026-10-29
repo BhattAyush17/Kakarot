@@ -115,7 +115,7 @@ def list_applications(config: dict[str, Any] | None = None) -> dict[str, Any]:
     answer = (
         "Apps I can open: " + ", ".join(names) + "."
         if names
-        else "No applications are configured yet. Add them in the BitMon config, Apps tab."
+        else "No applications are configured yet. Add them in the Kakarot config, Apps tab."
     )
     return {"ok": True, "applications": names, "count": len(names), "answer": answer}
 
@@ -144,7 +144,7 @@ async def open_application(name: str, *, config: dict[str, Any] | None = None) -
     if not apps:
         return {
             "ok": False,
-            "error": "No applications are configured. Add them in the BitMon config, Apps tab.",
+            "error": "No applications are configured. Add them in the Kakarot config, Apps tab.",
             "available": [],
         }
 
