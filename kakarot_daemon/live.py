@@ -621,7 +621,7 @@ REQUEST_DEADLINE_SECONDS = 45.0
 # the next candidate instead of leaving the UI in PROCESSING forever. Keep this
 # short: voice turns should fail over quickly, not spend 12 seconds on a model
 # that is merely hung. Every candidate gets its own 6-second budget.
-GENERATE_ATTEMPT_TIMEOUT_SECONDS = 6.0
+GENERATE_ATTEMPT_TIMEOUT_SECONDS = 12.0
 RETRY_BASE_SECONDS = 1.0
 RETRY_MAX_SECONDS = 4.0
 TTS_ATTEMPT_TIMEOUT_SECONDS = 20.0
@@ -638,6 +638,9 @@ PLAYBACK_TAIL_SECONDS = 3.0
 # should not delay every later turn. Retry it after a cooldown instead of
 # making the user wait behind the same broken endpoint on every request.
 MODEL_COOLDOWN_SECONDS = 60.0
+# A latency timeout means the endpoint is slow, not broken; it must return to
+# rotation quickly or consecutive turns can exhaust every candidate.
+MODEL_TIMEOUT_COOLDOWN_SECONDS = 15.0
 MODEL_RATE_LIMIT_COOLDOWN_SECONDS = 3600.0
 # Rolling context is optional: it runs off the voice path on the cheapest
 # fallback model and must never delay or fail a turn.
@@ -1644,14 +1647,15 @@ class KakarotLiveService:
                 except (asyncio.TimeoutError, TimeoutError):
                     # ``wait_for`` raises asyncio.TimeoutError; the Google client
                     # can also surface the built-in TimeoutError. Both mean the
-                    # same thing here: cool this model down and hand the next
-                    # candidate its own fresh attempt budget below.
+                    # same thing here: cool this model down briefly (slow is not
+                    # broken) and hand the next candidate its own fresh attempt
+                    # budget below.
                     error = TimeoutError(
                         f"Model {model} did not answer within "
                         f"{attempt_timeout:.0f} seconds"
                     )
                     self._model_cooldowns[model] = (
-                        time.monotonic() + MODEL_COOLDOWN_SECONDS
+                        time.monotonic() + MODEL_TIMEOUT_COOLDOWN_SECONDS
                     )
                     LOGGER.warning("%s; moving on.", error)
                     break

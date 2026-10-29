@@ -426,7 +426,7 @@ def test_generate_falls_back_after_timeout_with_a_fresh_six_second_budget() -> N
 
     assert answer is expected
     assert calls == ["test-model", "fallback-model"]
-    assert budgets == [6.0, 6.0]
+    assert budgets == [12.0, 12.0]
 
 
 def test_submit_content_returns_the_fallback_answer_after_primary_timeout() -> None:
