@@ -42,6 +42,35 @@ class HumanAgencyProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["prompt"], "touch /tmp/example")
         self.assertEqual(payload["options"], ["Approve", "Reject"])
 
+    async def test_command_approval_accepts_custom_agency_payload(self):
+        server = self._server()
+        server._subscribers.add(object())  # type: ignore[arg-type]
+        captured = {}
+
+        async def fake_broadcast(event_type, payload):
+            captured["type"] = event_type
+            captured["payload"] = payload
+            server._handle_auth_response(
+                {"request_id": payload["request_id"], "option": "✓ Approve"}
+            )
+
+        server.broadcast = fake_broadcast  # type: ignore[method-assign]
+        approved = await server.request_authorization(
+            "delegate_to_opencode",
+            label="OpenCode Delegation",
+            reason="Kakarot is offloading a code modification to the local DeepSeek agent.",
+            prompt="Task: Fix the bug\nFiles: src/app.py",
+            options=["✓ Approve", "✕ Reject"],
+        )
+
+        self.assertTrue(approved)
+        payload = captured["payload"]
+        self.assertEqual(payload["level"], "decision")
+        self.assertEqual(payload["label"], "OpenCode Delegation")
+        self.assertIn("local DeepSeek agent", payload["reason"])
+        self.assertEqual(payload["prompt"], "Task: Fix the bug\nFiles: src/app.py")
+        self.assertEqual(payload["options"], ["✓ Approve", "✕ Reject"])
+
     async def test_custom_option_round_trip(self):
         server = self._server()
         server._subscribers.add(object())  # type: ignore[arg-type]
@@ -71,6 +100,35 @@ class HumanAgencyProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["type"], "human_required")
         self.assertEqual(captured["payload"]["level"], "action")
         self.assertEqual(captured["payload"]["options"], ["I'm done", "Skip"])
+
+    async def test_action_tier_authorization_is_preserved(self):
+        server = self._server()
+        server._subscribers.add(object())  # type: ignore[arg-type]
+        captured = {}
+
+        async def fake_broadcast(event_type, payload):
+            captured["type"] = event_type
+            captured["payload"] = payload
+            server._handle_auth_response(
+                {"request_id": payload["request_id"], "option": "✓ Restart"}
+            )
+
+        server.broadcast = fake_broadcast  # type: ignore[method-assign]
+        approved = await server.request_authorization(
+            "restart_daemon",
+            level="action",
+            label="Daemon Restart Required",
+            reason="Kakarot needs to reboot to apply new code patches or clear its state.",
+            prompt="systemctl --user restart kakarot-core.service",
+            options=["✓ Restart", "✕ Cancel"],
+        )
+
+        self.assertTrue(approved)
+        self.assertEqual(captured["payload"]["level"], "action")
+        self.assertEqual(captured["payload"]["label"], "Daemon Restart Required")
+        self.assertEqual(
+            captured["payload"]["options"], ["✓ Restart", "✕ Cancel"]
+        )
 
     async def test_no_subscriber_denies_without_blocking(self):
         server = self._server()

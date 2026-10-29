@@ -357,18 +357,31 @@ class ControlServer:
             if not waiter.done():
                 waiter.cancel()
 
-    async def request_authorization(self, command: str) -> bool:
-        """Ask the UI to approve a command through the shared agency schema."""
+    async def request_authorization(
+        self,
+        command: str,
+        *,
+        label: str = "Approval required",
+        reason: str = "This command modifies system state and cannot run automatically.",
+        prompt: str | None = None,
+        options: list[str] | None = None,
+        level: str = "decision",
+    ) -> bool:
+        """Ask the UI to approve an action through the shared agency schema."""
         if not isinstance(command, str) or not command.strip() or len(command) > 1000:
             return False
+        approval_options = options or ["Approve", "Reject"]
+        if not isinstance(approval_options, list) or not approval_options:
+            return False
         choice = await self.request_human_intervention(
-            "decision",
-            "Approval required",
-            "This command modifies system state and cannot run automatically.",
-            command,
-            ["Approve", "Reject"],
+            level,
+            label,
+            reason,
+            prompt if prompt is not None else command,
+            approval_options,
         )
-        return choice == "Approve"
+        # The first option is the affirmative choice in the agency contract.
+        return choice == approval_options[0] or choice == "Approve"
 
     def _handle_auth_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         request_id = payload.get("request_id")
