@@ -313,12 +313,7 @@ def _set_x11_sticky(widget: QWidget) -> None:
                 pass
 
 
-_AGENCY_ACCENTS = {
-    "input": "#38bdf8",
-    "decision": "#f59e0b",
-    "action": "#a855f7",
-    "critical": "#ef4444",
-}
+_AGENCY_LEVELS = frozenset({"input", "decision", "action", "critical"})
 _AGENCY_LABELS = {
     "input": "Need your input",
     "decision": "Your decision",
@@ -355,7 +350,6 @@ class FloatingAgencyStrip(QWidget):
         self.setVisible(False)
         self._request_id = ""
         self._options: list[str] = []
-        self._accent = _AGENCY_ACCENTS["decision"]
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 9)
@@ -371,7 +365,7 @@ class FloatingAgencyStrip(QWidget):
         self.prompt.setAccessibleName("Agency request prompt")
         mono = QFont("Monospace")
         mono.setStyleHint(QFont.StyleHint.Monospace)
-        self.prompt.setFont(mono)
+        self.setFont(mono)
         self.options_widget = QWidget(self)
         self.options_layout = QHBoxLayout(self.options_widget)
         self.options_layout.setContentsMargins(0, 0, 0, 0)
@@ -388,22 +382,25 @@ class FloatingAgencyStrip(QWidget):
         return self._request_id
 
     def _apply_style(self) -> None:
+        """Strict monochrome terminal aesthetic: sharp borders, mono font.
+
+        The tier system lives on in labels and default options only; the
+        interface itself never changes color.
+        """
         self.setStyleSheet(
-            "#agencyStrip { background-color: rgba(18, 18, 22, 0.88); "
-            "border-radius: 12px; color: white; "
-            f"border-left: 3px solid {self._accent}; }}"
-            "#agencyHeader { color: white; background: transparent; border: 0; "
-            "font: 600 9pt sans-serif; }"
-            "#agencyPrompt { color: rgba(255, 255, 255, 0.62); "
-            "background: rgba(0, 0, 0, 0.24); "
-            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; "
-            "padding: 5px 7px; font-family: 'JetBrains Mono', "
-            "'DejaVu Sans Mono', monospace; font-size: 9pt; }"
-            "#agencyChip { color: white; background: rgba(255, 255, 255, 0.07); "
-            f"border: 1px solid {self._accent}; border-radius: 6px; "
-            "padding: 3px 10px; font: 9pt sans-serif; }"
-            f"#agencyChip:hover {{ background: {self._accent}; color: #111827; }}"
-            f"#agencyChip:pressed {{ background: {self._accent}; color: #111827; }}"
+            "#agencyStrip { background-color: rgba(0, 0, 0, 0.85); "
+            "color: #ffffff; border-radius: 0px; border: 1px solid #ffffff; "
+            "font-family: monospace; }"
+            "#agencyHeader { color: #ffffff; background: transparent; "
+            "border: 0; font-family: monospace; font-weight: 600; "
+            "font-size: 9pt; }"
+            "#agencyPrompt { color: #ffffff; background: transparent; "
+            "border: 0; font-family: monospace; font-size: 9pt; }"
+            "#agencyChip { background-color: rgba(0, 0, 0, 0.5); "
+            "color: #ffffff; border: 1px solid #ffffff; border-radius: 0px; "
+            "padding: 4px 12px; font-family: monospace; font-weight: bold; }"
+            "#agencyChip:hover { background-color: #ffffff; color: #000000; }"
+            "#agencyChip:pressed { background-color: #ffffff; color: #000000; }"
         )
 
     def _clear_options(self) -> None:
@@ -422,7 +419,7 @@ class FloatingAgencyStrip(QWidget):
             request_id = payload.get("request_id") or payload.get("token")
             prompt = payload.get("command") or payload.get("prompt")
             level = str(payload.get("level") or "decision").strip().lower()
-            if level not in _AGENCY_ACCENTS:
+            if level not in _AGENCY_LEVELS:
                 level = "decision"
             label = str(payload.get("label") or "Approval required").strip()
             reason = str(
@@ -433,7 +430,7 @@ class FloatingAgencyStrip(QWidget):
             request_id = payload.get("request_id")
             prompt = payload.get("prompt") or payload.get("command")
             level = str(payload.get("level") or "decision").strip().lower()
-            if level not in _AGENCY_ACCENTS:
+            if level not in _AGENCY_LEVELS:
                 level = "decision"
             reason = str(payload.get("reason") or "").strip()
             label = str(
@@ -454,8 +451,6 @@ class FloatingAgencyStrip(QWidget):
         prompt_text = str(prompt or "(no prompt provided)")[:1200]
         self._request_id = request_id
         self._options = list(options[:8])
-        self._accent = _AGENCY_ACCENTS[level]
-        self._apply_style()
         self.header.setText(f"👤 {label} · {reason}" if reason else f"👤 {label}")
         self.prompt.setText(prompt_text)
         self._clear_options()
