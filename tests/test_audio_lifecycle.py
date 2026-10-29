@@ -567,8 +567,14 @@ class MascotLayoutTests(unittest.TestCase):
         self.assertEqual(
             [button.text() for button in strip.buttons], ["I'm done", "Skip"]
         )
-        self.assertIn("#a855f7", strip.styleSheet())
-        self.assertIn("monospace", strip.prompt.styleSheet() or strip.styleSheet())
+        stylesheet = strip.styleSheet()
+        # Strict monochrome terminal aesthetic: a single white border and
+        # mono font, with no per-tier accent colors anywhere.
+        self.assertIn("background-color: rgba(0, 0, 0, 0.85)", stylesheet)
+        self.assertIn("border: 1px solid #ffffff", stylesheet)
+        self.assertIn("monospace", stylesheet)
+        for accent in ("#a855f7", "#f59e0b", "#38bdf8", "#ef4444"):
+            self.assertNotIn(accent, stylesheet)
 
         emitted = []
         strip.response_selected.connect(emitted.append)
