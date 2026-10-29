@@ -303,6 +303,7 @@ class AudioLifecycleTests(unittest.TestCase):
         bridge._wake_listener = listener
         bridge.audio_available = True
         bridge._muted = False
+        epoch = bridge.mute_epoch
 
         bridge.sleep_microphone()
 
@@ -313,6 +314,9 @@ class AudioLifecycleTests(unittest.TestCase):
         self.assertIsNone(bridge._wake_listener)
         self.assertTrue(bridge.muted)
         self.assertFalse(bridge.audio_available)
+        # An in-flight answer must see this as an external mute and keep the
+        # microphone closed when it restores follow-up listening.
+        self.assertGreater(bridge.mute_epoch, epoch)
 
     def test_manual_wake_reopens_released_stream(self):
         bridge = AudioBridge(input_device=None, output_device=None)
@@ -558,12 +562,16 @@ class MascotLayoutTests(unittest.TestCase):
 
         strip = mascot.agency_strip
         self.assertFalse(strip.isHidden())
-        self.assertIn("Action required", strip.header.text())
+        self.assertTrue(strip.header.text().startswith("👤 Action required"))
         self.assertIn("Only you can plug in the drive.", strip.header.text())
         self.assertEqual(
             [button.text() for button in strip.buttons], ["I'm done", "Skip"]
         )
+        self.assertIn("#a855f7", strip.styleSheet())
+        self.assertIn("monospace", strip.prompt.styleSheet() or strip.styleSheet())
 
+        emitted = []
+        strip.response_selected.connect(emitted.append)
         sent = []
 
         def capture(event_type, payload):
@@ -574,11 +582,12 @@ class MascotLayoutTests(unittest.TestCase):
         strip.buttons[0].click()
         self.app.processEvents()
 
+        self.assertEqual(emitted, ["I'm done"])
         self.assertTrue(strip.isHidden())
         self.assertEqual(sent[0][0], "human_response")
         self.assertEqual(sent[0][1]["request_id"], "request-123")
         self.assertEqual(sent[0][1]["option"], "I'm done")
-        self.assertFalse(sent[0][1]["approved"])
+        self.assertTrue(sent[0][1]["approved"])
 
     def test_post_init_never_unmutes_but_explicit_mic_click_still_does(self):
         mascot = KakarotMascot()
@@ -597,6 +606,47 @@ class MascotLayoutTests(unittest.TestCase):
         mascot._mic_active = False
         mascot.toggle_microphone()
         mascot._send.assert_called_once_with("unmute")
+
+    def test_muted_status_outranks_a_stale_mic_active_flag(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        mascot._request = ("status", {})
+        mascot._finish(
+            {
+                "ok": True,
+                "phase": "IDLE_MUTED",
+                "muted": True,
+                "listening": False,
+                "mic_active": True,
+                "audio_available": True,
+                "connected": True,
+            }
+        )
+
+        self.assertFalse(mascot._mic_active)
+        self.assertEqual(mascot.mic_button.toolTip(), "Enable microphone")
+        mascot._send = Mock()
+        mascot.toggle_microphone()
+        mascot._send.assert_called_once_with("unmute")
+
+    def test_failed_unmute_status_does_not_look_like_listening(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        mascot._request = ("status", {})
+        mascot._finish(
+            {
+                "ok": True,
+                "phase": "LISTENING",
+                "muted": False,
+                "listening": True,
+                "mic_active": True,
+                "audio_available": False,
+                "connected": True,
+            }
+        )
+
+        self.assertFalse(mascot._mic_active)
+        self.assertEqual(mascot.mic_button.toolTip(), "Enable microphone")
 
     def test_health_led_reflects_connection_not_microphone(self):
         mascot = KakarotMascot()

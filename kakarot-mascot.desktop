@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kakarot
+GenericName=Desktop Assistant
+Comment=Open the floating Kakarot desktop mascot
+Exec=env QT_QPA_PLATFORM=xcb "PYTHONPATH=@PREFIX@" "@GUI_PYTHON@" "@PREFIX@/kakarot_overlay/mascot.py"
+Icon=io.github.kakarot.Daemon
+Terminal=false
+Categories=Utility;ArtificialIntelligence;
+Keywords=assistant;agent;automation;voice;mascot;
+StartupNotify=true
+StartupWMClass=Kakarot

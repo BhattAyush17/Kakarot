@@ -19,7 +19,7 @@ from PyQt6.QtCore import (
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
@@ -314,10 +314,10 @@ def _set_x11_sticky(widget: QWidget) -> None:
 
 
 _AGENCY_ACCENTS = {
-    "input": ("#38bdf8", "rgba(8,47,73,0.88)"),
-    "decision": ("#fbbf24", "rgba(69,26,3,0.88)"),
-    "action": ("#a78bfa", "rgba(46,16,101,0.88)"),
-    "critical": ("#f87171", "rgba(69,10,10,0.90)"),
+    "input": "#38bdf8",
+    "decision": "#f59e0b",
+    "action": "#a855f7",
+    "critical": "#ef4444",
 }
 _AGENCY_LABELS = {
     "input": "Need your input",
@@ -341,19 +341,21 @@ class FloatingAgencyStrip(QWidget):
     toggle stay responsive.
     """
 
-    chosen = pyqtSignal(str, str)
+    response_selected = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setObjectName("agencyStrip")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMinimumWidth(228)
         self.setMaximumWidth(320)
         self.setVisible(False)
         self._request_id = ""
         self._options: list[str] = []
-        self._accent = _AGENCY_ACCENTS["decision"][0]
-        self._background = _AGENCY_ACCENTS["decision"][1]
+        self._accent = _AGENCY_ACCENTS["decision"]
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 9)
@@ -367,6 +369,9 @@ class FloatingAgencyStrip(QWidget):
         self.prompt.setWordWrap(True)
         self.prompt.setTextFormat(Qt.TextFormat.PlainText)
         self.prompt.setAccessibleName("Agency request prompt")
+        mono = QFont("Monospace")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        self.prompt.setFont(mono)
         self.options_widget = QWidget(self)
         self.options_layout = QHBoxLayout(self.options_widget)
         self.options_layout.setContentsMargins(0, 0, 0, 0)
@@ -377,20 +382,28 @@ class FloatingAgencyStrip(QWidget):
         self.buttons: list[QPushButton] = []
         self._apply_style()
 
+    @property
+    def request_id(self) -> str:
+        """The daemon request currently rendered by the strip."""
+        return self._request_id
+
     def _apply_style(self) -> None:
         self.setStyleSheet(
-            f"#agencyStrip {{ background:{self._background}; "
-            f"border:1px solid {self._accent}; border-radius:10px; }}"
-            "#agencyHeader { color:#f4f4f5; background:transparent; border:0; "
-            "font:600 9pt sans-serif; }"
-            "#agencyPrompt { color:#d4d4d8; background:rgba(0,0,0,0.24); "
-            "border:1px solid rgba(255,255,255,0.09); border-radius:6px; "
-            "padding:5px 7px; font:9pt 'JetBrains Mono','DejaVu Sans Mono',monospace; }"
-            "#agencyChip { color:#f4f4f5; background:rgba(255,255,255,0.07); "
-            f"border:1px solid {self._accent}; border-radius:6px; "
-            "padding:3px 10px; font:9pt sans-serif; }"
-            f"#agencyChip:hover {{ background:{self._accent}; color:#111827; }}"
-            f"#agencyChip:pressed {{ background:{self._accent}; }}"
+            "#agencyStrip { background-color: rgba(18, 18, 22, 0.88); "
+            "border-radius: 12px; color: white; "
+            f"border-left: 3px solid {self._accent}; }}"
+            "#agencyHeader { color: white; background: transparent; border: 0; "
+            "font: 600 9pt sans-serif; }"
+            "#agencyPrompt { color: rgba(255, 255, 255, 0.62); "
+            "background: rgba(0, 0, 0, 0.24); "
+            "border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; "
+            "padding: 5px 7px; font-family: 'JetBrains Mono', "
+            "'DejaVu Sans Mono', monospace; font-size: 9pt; }"
+            "#agencyChip { color: white; background: rgba(255, 255, 255, 0.07); "
+            f"border: 1px solid {self._accent}; border-radius: 6px; "
+            "padding: 3px 10px; font: 9pt sans-serif; }"
+            f"#agencyChip:hover {{ background: {self._accent}; color: #111827; }}"
+            f"#agencyChip:pressed {{ background: {self._accent}; color: #111827; }}"
         )
 
     def _clear_options(self) -> None:
@@ -401,46 +414,57 @@ class FloatingAgencyStrip(QWidget):
                 widget.deleteLater()
         self.buttons.clear()
 
-    def show_request(self, payload: dict, event_type: str = "human_required") -> None:
+    def show_request(self, payload: dict, event_type: str = "human_required") -> bool:
         """Render a human_required payload, including legacy approval events."""
         if not isinstance(payload, dict):
-            return
+            return False
         if event_type in {"auth_request", "hitl_prompt"}:
             request_id = payload.get("request_id") or payload.get("token")
             prompt = payload.get("command") or payload.get("prompt")
-            level = "decision"
-            label = "Approval required"
-            reason = "This action can change your system."
-            options = ["Approve", "Reject"]
+            level = str(payload.get("level") or "decision").strip().lower()
+            if level not in _AGENCY_ACCENTS:
+                level = "decision"
+            label = str(payload.get("label") or "Approval required").strip()
+            reason = str(
+                payload.get("reason") or "This action can change your system."
+            ).strip()
+            options = payload.get("options")
         else:
             request_id = payload.get("request_id")
             prompt = payload.get("prompt") or payload.get("command")
             level = str(payload.get("level") or "decision").strip().lower()
+            if level not in _AGENCY_ACCENTS:
+                level = "decision"
             reason = str(payload.get("reason") or "").strip()
-            label = str(payload.get("label") or _AGENCY_LABELS.get(level, "Your decision")).strip()
+            label = str(
+                payload.get("label") or _AGENCY_LABELS.get(level, "Your decision")
+            ).strip()
             options = payload.get("options")
-            if not isinstance(options, list):
-                options = _AGENCY_DEFAULT_OPTIONS.get(level, ["Approve", "Reject"])
-            else:
-                options = [str(option).strip()[:80] for option in options if str(option).strip()]
-            if not options:
-                options = _AGENCY_DEFAULT_OPTIONS.get(level, ["Approve", "Reject"])
-        if level not in _AGENCY_ACCENTS:
-            level = "decision"
+        if not isinstance(options, list):
+            options = _AGENCY_DEFAULT_OPTIONS.get(level, ["Approve", "Reject"])
+        options = [
+            str(option).strip()[:80]
+            for option in options
+            if str(option).strip()
+        ]
+        if not options:
+            options = _AGENCY_DEFAULT_OPTIONS.get(level, ["Approve", "Reject"])
         if not isinstance(request_id, str) or not request_id:
-            return
+            return False
         prompt_text = str(prompt or "(no prompt provided)")[:1200]
         self._request_id = request_id
         self._options = list(options[:8])
-        self._accent, self._background = _AGENCY_ACCENTS[level]
+        self._accent = _AGENCY_ACCENTS[level]
         self._apply_style()
-        self.header.setText(f"{label} · {reason}" if reason else label)
+        self.header.setText(f"👤 {label} · {reason}" if reason else f"👤 {label}")
         self.prompt.setText(prompt_text)
         self._clear_options()
         for option in self._options:
             chip = QPushButton(option, self.options_widget)
             chip.setObjectName("agencyChip")
+            chip.setFlat(True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             chip.setAccessibleName(f"Respond: {option}")
             chip.clicked.connect(
                 lambda _checked=False, choice=option: self._choose(choice)
@@ -450,24 +474,21 @@ class FloatingAgencyStrip(QWidget):
         self.options_layout.addStretch(1)
         self.show()
         self.adjustSize()
-        if self.parentWidget() is not None:
-            self.parentWidget().adjustSize()
         self.raise_()
+        return True
 
     def hide_request(self) -> None:
         self._request_id = ""
         self._options = []
         self._clear_options()
         self.hide()
-        if self.parentWidget() is not None:
-            self.parentWidget().adjustSize()
 
     def _choose(self, option: str) -> None:
-        request_id = self._request_id
-        if not request_id:
+        if not self._request_id:
             return
-        self.hide_request()
-        self.chosen.emit(request_id, option)
+        choice = str(option).strip()[:80]
+        if choice:
+            self.response_selected.emit(choice)
 
 
 class KakarotMascot(QWidget):
@@ -585,11 +606,15 @@ class KakarotMascot(QWidget):
         root.setSpacing(4)
         root.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignHCenter)
         root.addWidget(self.dock, 0, Qt.AlignmentFlag.AlignHCenter)
-        self.agency_strip = FloatingAgencyStrip(self)
-        self.agency_strip.chosen.connect(self._send_agency_choice)
-        root.addWidget(
-            self.agency_strip, 0, Qt.AlignmentFlag.AlignHCenter
+        self.agency_strip = FloatingAgencyStrip()
+        self.agency_strip.response_selected.connect(self._on_agency_response)
+        root.insertWidget(
+            root.indexOf(self.dock) + 1,
+            self.agency_strip,
+            0,
+            Qt.AlignmentFlag.AlignHCenter,
         )
+        self.agency_strip.hide()
         root.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         self.adjustSize()
 
@@ -890,10 +915,14 @@ class KakarotMascot(QWidget):
                 self._api_connected = bool(state["connected"])
             if "output_muted" in state:
                 self._speaker_active = not bool(state["output_muted"])
-            if "mic_active" in state:
-                self._mic_active = bool(state["mic_active"])
+            if state.get("audio_available") is False:
+                self._mic_active = False
+            elif "muted" in state:
+                self._mic_active = not bool(state["muted"])
             elif "listening" in state:
-                self._mic_active = bool(state["listening"]) and not bool(state.get("muted"))
+                self._mic_active = bool(state["listening"])
+            elif "mic_active" in state:
+                self._mic_active = bool(state["mic_active"])
             if self._last_error or state.get("phase") == "ERROR":
                 self._api_connected = False
             speaking = bool(state.get("speaking"))
@@ -945,7 +974,9 @@ class KakarotMascot(QWidget):
             payload = event.get("payload")
             if not isinstance(payload, dict):
                 return
-            self.agency_strip.show_request(payload, event_type)
+            anchor = self.geometry()
+            if self.agency_strip.show_request(payload, event_type):
+                self._resize_for_agency(anchor)
             return
         if event_type == "audio_level":
             payload = event.get("payload")
@@ -962,18 +993,51 @@ class KakarotMascot(QWidget):
                     active=bool(payload.get("active", True)),
                 )
 
-    def _send_agency_choice(self, request_id: str, option: str) -> None:
-        """Queue a non-blocking chip response without stalling the Qt loop."""
-        if self._closing or not isinstance(request_id, str) or not request_id:
+    def _resize_for_agency(self, anchor=None) -> None:
+        """Resize around an agency prompt while keeping the window anchored.
+
+        The mascot lives in the bottom-right corner, so growing downward would
+        push the strip off-screen.  Keep the previous bottom-right corner fixed
+        and let the window grow upward, then clamp it to the available screen.
+        """
+        if self._closing:
             return
-        if not isinstance(option, str) or not option.strip():
+        if anchor is None:
+            anchor = self.geometry()
+        self.layout().activate()
+        self.adjustSize()
+        size = self.size()
+        x = anchor.right() - size.width() + 1
+        y = anchor.bottom() - size.height() + 1
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            x = max(area.left(), min(x, area.right() - size.width() + 1))
+            y = max(area.top(), min(y, area.bottom() - size.height() + 1))
+        self.setGeometry(x, y, size.width(), size.height())
+
+    def _on_agency_response(self, option: str) -> None:
+        """Hide the strip, restore the dock geometry, then queue the answer."""
+        anchor = self.geometry()
+        request_id = self.agency_strip.request_id
+        self.agency_strip.hide_request()
+        self._resize_for_agency(anchor)
+        if self._closing or not request_id:
             return
+        choice = str(option).strip()[:80]
+        if not choice:
+            return
+        approved = choice.startswith("✓") or choice in [
+            "Approve",
+            "Restart",
+            "I'm done",
+        ]
         self._pending_auth = (
             "human_response",
             {
                 "request_id": request_id,
-                "option": option.strip()[:80],
-                "approved": option.strip() == "Approve",
+                "option": choice,
+                "approved": approved,
             },
         )
         self._flush_pending_auth()
@@ -1098,10 +1162,18 @@ class KakarotMascot(QWidget):
                 self._api_connected = bool(response["connected"])
             if self._last_error or response.get("phase") == "ERROR":
                 self._api_connected = False
-            if "mic_active" in response:
-                self._mic_active = bool(response["mic_active"])
+            # ``muted`` is the user's listening intent and outranks the
+            # lower-level capture flag.  A race during playback could otherwise
+            # report ``muted=True, mic_active=True``, leaving the button stuck
+            # on "Mute" so every click sends another no-op mute.
+            if response.get("audio_available") is False:
+                self._mic_active = False
+            elif "muted" in response:
+                self._mic_active = not bool(response["muted"])
             elif "listening" in response:
                 self._mic_active = bool(response["listening"])
+            elif "mic_active" in response:
+                self._mic_active = bool(response["mic_active"])
             if "output_muted" in response:
                 self._speaker_active = not bool(response["output_muted"])
         speaker_event = (
