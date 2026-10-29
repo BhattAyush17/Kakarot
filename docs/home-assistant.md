@@ -1,6 +1,6 @@
 # Home Assistant
 
-BitMon can control your smart home through **Home Assistant** — ask the pet to
+Kakarot can control your smart home through **Home Assistant** — ask the pet to
 turn lights and devices on or off, and it does. It talks to Home Assistant over
 an **MCP** (Model Context Protocol) endpoint, and you choose exactly which
 devices it's allowed to touch.
@@ -13,14 +13,14 @@ devices it's allowed to touch.
 
 ## 1. Install the MCP server add-on
 
-BitMon talks to Home Assistant through the
+Kakarot talks to Home Assistant through the
 **[ha-mcp](https://github.com/homeassistant-ai/ha-mcp)** add-on
 (Home Assistant MCP Server). Install it in your Home Assistant instance and copy
 the private MCP URL it generates (it looks like
 `http://homeassistant.local:9583/private_...`).
 
 > [!IMPORTANT]
-> Use **ha-mcp version 7.7 or newer**. BitMon resolves the add-on's tools
+> Use **ha-mcp version 7.7 or newer**. Kakarot resolves the add-on's tools
 > dynamically, so it keeps working across add-on updates, but 7.7+ is the
 > supported baseline.
 
@@ -32,7 +32,7 @@ In **MCPs → Home Assistant** (see [Configuration](configuration.md#mcps)):
 
 1. Paste your **Home Assistant MCP URL**.
 2. Tick **Enable Home Assistant**.
-3. Click **Validate connection**. BitMon connects, refreshes its tool cache, and
+3. Click **Validate connection**. Kakarot connects, refreshes its tool cache, and
    reports success or the error.
 
 
@@ -82,7 +82,7 @@ you.
 ## Privacy note
 
 Home Assistant data is local to your machine, but the **device names and your HA
-URL** end up in BitMon's cache and logs. Review `cache/` and `logs/` before
+URL** end up in Kakarot's cache and logs. Review `cache/` and `logs/` before
 sharing logs or publishing a fork. See [Providers → Privacy](providers.md#privacy).
 
 ---

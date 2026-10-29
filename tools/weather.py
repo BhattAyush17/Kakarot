@@ -220,14 +220,14 @@ def _build_result(geo: dict[str, Any], forecast: dict[str, Any]) -> dict[str, An
 async def get_weather(location: str | None = None, *, config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return current conditions + a short forecast for ``location``.
 
-    Falls back to the location configured in the BitMon config when no explicit
+    Falls back to the location configured in the Kakarot config when no explicit
     location is given.
     """
     started = time.perf_counter()
     requested = str(location or "").strip() or _configured_location(config)
     if not requested:
         message = (
-            "No location is set. Add a city in the BitMon config, Capabilities tab, "
+            "No location is set. Add a city in the Kakarot config, Capabilities tab, "
             "or tell me which city you want the weather for."
         )
         return {"ok": False, "error": message, "answer": message}

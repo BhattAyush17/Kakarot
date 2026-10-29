@@ -17,7 +17,7 @@
   },
   "character": {
     "name": "Noah",
-    "personality_prompt": "Personality: helpful, concise, friendly virtual companion with a playful BitMon energy."
+    "personality_prompt": "Personality: helpful, concise, friendly virtual companion with a playful Kakarot energy."
   },
   "inworld": {
     "model": "deepseek-v4-flash",

@@ -18,7 +18,7 @@ import numpy as np
 import sounddevice as sd
 import websockets
 from PySide6.QtCore import QFileSystemWatcher, QEasingCurve, QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFontDatabase, QIcon, QImage, QPixmap
+from PySide6.QtGui import QFontDatabase, QIcon, QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QGraphicsOpacityEffect,
@@ -40,7 +40,7 @@ ICONS_DIR = PERSONA_DIR / "icons"
 CONFIG_PATH = PERSONA_DIR / "persona_config.json"
 PERSONAS_DIR = PERSONA_DIR / "personas"
 PERSONAS_MANIFEST_PATH = PERSONAS_DIR / "personas.json"
-BACKEND_CONFIG_PATH = PERSONA_DIR.parent / "bitmon_config.json"
+BACKEND_CONFIG_PATH = PERSONA_DIR.parent / "kakarot_config.json"
 LEGACY_NAME = "digi" + "mon"
 LEGACY_BACKEND_CONFIG_PATH = PERSONA_DIR.parent / f"{LEGACY_NAME}_config.json"
 if str(PERSONA_DIR.parent) not in sys.path:
@@ -48,14 +48,16 @@ if str(PERSONA_DIR.parent) not in sys.path:
 from core.crash_logger import install_crash_logger
 
 def _env(name: str, default: str = "") -> str:
-    return os.environ.get(f"BITMON_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
+    return os.environ.get(f"KAKAROT_{name}") or os.environ.get(f"{LEGACY_NAME.upper()}_{name}") or default
 
 
 LOG_DIR = Path(_env("LOG_DIR") or PERSONA_DIR.parent / "logs")
-install_crash_logger("bitmon-persona", LOG_DIR)
+install_crash_logger("kakarot-persona", LOG_DIR)
 
 BACKEND_HOST = _env("HOST", "127.0.0.1")
 BACKEND_PORT = int(_env("PORT", "8000"))
+from core.security import HEADER_NAME, get_local_token
+
 URL_SESSION = f"ws://{BACKEND_HOST}:{BACKEND_PORT}/session"
 URL_CONFIG_CLIENT = f"http://{BACKEND_HOST}:{BACKEND_PORT}/api/config/client"
 SESSION_RATE = 24000
@@ -268,6 +270,8 @@ class SpriteAnimation:
         self.loaded = False
         self.frame_w = frame_size
         self.frame_h = frame_size
+        self.decoded_frame_w = frame_size
+        self.decoded_frame_h = frame_size
         self.fps = fps
         self.columns = max(1, int(columns))
         self.rows = max(1, int(rows))
@@ -288,6 +292,8 @@ class SpriteAnimation:
         # The full sheet is kept as a QImage (CPU side). We never convert the
         # whole ~100MB sheet to a pixmap; only the small current frame is.
         self.image = image
+        self.decoded_frame_w = max(1, image.width() // self.columns)
+        self.decoded_frame_h = max(1, image.height() // self.rows)
         self.loaded = True
 
     def reset(self) -> None:
@@ -297,12 +303,14 @@ class SpriteAnimation:
     def next_frame(self) -> QPixmap | None:
         if not self.is_ready:
             return None
-        x = (self.index % self.columns) * self.frame_w
-        y = (self.index // self.columns) * self.frame_h
+        x = (self.index % self.columns) * self.decoded_frame_w
+        y = (self.index // self.columns) * self.decoded_frame_h
         # Crop just the current ~1MB frame from the sheet and convert that tile
         # to a pixmap. Converting the entire sheet up front was what briefly
         # hitched the GUI when the pet opened.
-        frame = self.image.copy(QRect(x, y, self.frame_w, self.frame_h))
+        frame = self.image.copy(
+            QRect(x, y, self.decoded_frame_w, self.decoded_frame_h)
+        )
         self.index = (self.index + 1) % self.total_frames
         self.just_looped = self.index == 0
         return QPixmap.fromImage(frame)
@@ -320,7 +328,7 @@ class SheetLoader(QObject):
 
     def __init__(self) -> None:
         super().__init__()
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[str] = queue.Queue(maxsize=4)
         self._seen: set[str] = set()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -340,13 +348,24 @@ class SheetLoader(QObject):
             if self._thread is None:
                 self._thread = threading.Thread(target=self._run, daemon=True)
                 self._thread.start()
-        self._queue.put(key)
+        try:
+            self._queue.put_nowait(key)
+        except queue.Full:
+            with self._lock:
+                self._seen.discard(key)
 
     def _run(self) -> None:
         while True:
             key = self._queue.get()
             try:
-                image = QImage(key)
+                reader = QImageReader(key)
+                size = reader.size()
+                # Lightweight profile: sheets use 512px cells but the overlay
+                # displays a much smaller pet. Half-resolution decode cuts each
+                # sheet's resident image memory by roughly 75 percent.
+                if size.isValid() and max(size.width(), size.height()) > 2560:
+                    reader.setScaledSize(QSize(size.width() // 2, size.height() // 2))
+                image = reader.read()
             except Exception:
                 image = None
             self.loaded.emit(key, image)
@@ -507,6 +526,8 @@ class AudioInput:
 
 
 class AudioOutput:
+    MAX_BUFFER_BYTES = SESSION_RATE * 2 * 10
+
     def __init__(self):
         self.buffer = bytearray()
         self.lock = threading.Lock()
@@ -537,6 +558,9 @@ class AudioOutput:
     def push_pcm(self, pcm: bytes) -> None:
         self.start()
         with self.lock:
+            overflow = len(self.buffer) + len(pcm) - self.MAX_BUFFER_BYTES
+            if overflow > 0:
+                del self.buffer[:overflow]
             self.buffer.extend(pcm)
             self.total_received_samples += len(pcm) // 2
 
@@ -585,7 +609,7 @@ class SessionBridge(QObject):
     def __init__(self, audio_queue: queue.Queue[bytes]):
         super().__init__()
         self.audio_queue = audio_queue
-        self.control_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+        self.control_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=64)
         self.thread: threading.Thread | None = None
         self.running = False
         self.connected = False
@@ -600,17 +624,27 @@ class SessionBridge(QObject):
     def stop(self) -> None:
         if not self.running:
             return
-        self.control_queue.put({"type": "close"})
+        self._put_control({"type": "close"})
 
     def send_text(self, text: str) -> None:
         self.ensure_started()
-        self.control_queue.put({"type": "text", "text": text})
+        self._put_control({"type": "text", "text": text})
 
     def send_audio_clip(self, pcm: bytes) -> None:
         if not pcm:
             return
         self.ensure_started()
-        self.control_queue.put({"type": "audio_clip", "pcm": pcm})
+        self._put_control({"type": "audio_clip", "pcm": pcm})
+
+    def _put_control(self, item: dict[str, Any]) -> None:
+        try:
+            self.control_queue.put_nowait(item)
+        except queue.Full:
+            try:
+                self.control_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self.control_queue.put_nowait(item)
 
     def _thread_main(self) -> None:
         try:
@@ -625,7 +659,9 @@ class SessionBridge(QObject):
         pending_audio_clips: list[bytes] = []
         session_ready = False
         try:
-            async with websockets.connect(URL_SESSION) as ws:
+            async with websockets.connect(
+                URL_SESSION, additional_headers={HEADER_NAME: get_local_token()}
+            ) as ws:
                 self.connected = True
                 self.connected_changed.emit(True)
 
@@ -647,7 +683,7 @@ class SessionBridge(QObject):
 
                 async def send_audio_clip(pcm: bytes) -> None:
                     await ws.send(json.dumps({
-                        "type": "bitmon.whisper_audio",
+                        "type": "kakarot.whisper_audio",
                         "audio": base64.b64encode(pcm).decode("ascii"),
                     }))
 
@@ -712,10 +748,16 @@ class SessionBridge(QObject):
                             delta = event.get("delta") or ""
                             if isinstance(delta, str) and delta:
                                 self.bot_transcript_delta.emit(clean_text_for_subtitle(delta))
-                        elif event_type == "bitmon.response_interrupted":
+                        elif event_type == "kakarot.response_interrupted":
                             self.bot_response_interrupted.emit()
-                        elif event_type == "bitmon.clear_subtitle":
+                        elif event_type == "kakarot.clear_subtitle":
                             self.subtitle_clear.emit()
+                        elif event_type == "kakarot.notification":
+                            message = str(event.get("message") or "").strip()
+                            if message:
+                                self.bot_response_started.emit()
+                                self.bot_transcript_delta.emit(message)
+                                self.bot_response_done.emit()
                         elif event_type in ("response.output_audio.done", "response.audio.done", "response.done"):
                             self.bot_response_done.emit()
                         elif event_type == "error":
@@ -859,7 +901,7 @@ class OverlayWindow(QWidget):
     def _setup_window(self) -> None:
         window_cfg = self.persona_config["window"]
         self.setFixedSize(int(window_cfg["width"]), int(window_cfg["height"]))
-        self.setWindowTitle("BitMon Py")
+        self.setWindowTitle("Kakarot Py")
         flags = Qt.FramelessWindowHint | Qt.Tool
         if bool(self.config.get("overlay_always_on_top", window_cfg.get("always_on_top", True))):
             flags |= Qt.WindowStaysOnTopHint
@@ -1243,6 +1285,9 @@ class OverlayWindow(QWidget):
 
     def _load_animations(self) -> None:
         assets_dir = persona_assets_dir()
+        lightweight_assets = PERSONA_DIR / "assets-light"
+        if assets_dir == ASSETS_DIR and lightweight_assets.exists():
+            assets_dir = lightweight_assets
         self.anims = {kind: [] for kind in ANIM_KINDS}
         disabled_idle_cfgs: list[dict[str, Any]] = []
 
@@ -1318,15 +1363,10 @@ class OverlayWindow(QWidget):
     def _begin_sheet_loading(self) -> None:
         self.sheet_loader.reset()
         self.loaded_paths = set()
-        # Visible-first ordering so the pet appears as soon as possible.
-        ordered_paths: list[Path] = []
-        seen: set[str] = set()
-        for kind in ("start", "idle", "thinking", "listening", "talk", "poke", "error"):
-            for anim in self.anims[kind]:
-                key = str(anim.path)
-                if key not in seen:
-                    seen.add(key)
-                    ordered_paths.append(anim.path)
+        # A decoded 5120x5120 RGBA sheet is roughly 100 MB. Decode only the
+        # first visible sheet; later states load on demand and replace it.
+        initial_pool = self.anims["start"] or self.anims["idle"]
+        ordered_paths = [initial_pool[0].path] if initial_pool else []
         self.loading_total = len(ordered_paths)
         if self.loading_total == 0:
             # Blank/draft persona with no sprites yet: nothing to load.
@@ -1341,8 +1381,11 @@ class OverlayWindow(QWidget):
             return
         for pool in self.anims.values():
             for anim in pool:
-                if not anim.has_data and str(anim.path) == path_str:
+                if str(anim.path) == path_str:
                     anim.set_image(image)
+                elif anim.image is not None:
+                    anim.image = None
+                    anim.loaded = False
         self.loaded_paths.add(path_str)
         self._update_loading_progress()
 
@@ -1641,7 +1684,15 @@ class OverlayWindow(QWidget):
             return
         candidates = [anim for anim in pool if anim is not self.current_anim]
         previous_state = self.anim_state
-        self.current_anim = random.choice(candidates or pool)
+        ready = [anim for anim in candidates if anim.is_ready]
+        if ready:
+            self.current_anim = random.choice(ready)
+        elif self.current_anim is None:
+            self.current_anim = pool[0]
+        else:
+            self.current_anim = random.choice(candidates or pool)
+        if not self.current_anim.is_ready:
+            self.sheet_loader.request(self.current_anim.path)
         self.current_anim.reset()
         self.anim_state = state
         self.talking = state == "talk"

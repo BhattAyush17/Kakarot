@@ -10,15 +10,15 @@ text is on disk under `logs/`. Most problems announce themselves there.
 
 ### The launcher says the port is busy
 
-Something else is already on `127.0.0.1:8000`. Either stop it, or run BitMon on
+Something else is already on `127.0.0.1:8000`. Either stop it, or run Kakarot on
 another port:
 
 ```powershell
-$env:BITMON_PORT="8123"
+$env:KAKAROT_PORT="8123"
 python launcher.py
 ```
 
-If it's a *previous* BitMon backend that's still healthy, the launcher reuses it —
+If it's a *previous* Kakarot backend that's still healthy, the launcher reuses it —
 that's expected, not an error.
 
 ### "Loading models…" takes a long time on first run

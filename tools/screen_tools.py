@@ -329,7 +329,7 @@ async def analyze_screen(
     if not config.get("tools", {}).get("screen_analysis", False):
         return {
             "ok": False,
-            "error": "Screen analysis is disabled in BitMon config.",
+            "error": "Screen analysis is disabled in Kakarot config.",
             "answer": "Screen analysis is turned off in the settings.",
         }
 

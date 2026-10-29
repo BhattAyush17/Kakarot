@@ -23,7 +23,7 @@ from services.mcp_external import call_mcp_tool, list_mcp_tools
 
 LEGACY_NAME = "digi" + "mon"
 HA_CACHE_DIR = Path(
-    os.environ.get("BITMON_CACHE_DIR")
+    os.environ.get("KAKAROT_CACHE_DIR")
     or os.environ.get(f"{LEGACY_NAME.upper()}_CACHE_DIR")
     or Path(__file__).parent
 )
@@ -747,7 +747,7 @@ async def _run_control(
 def _run_list(domain: str | None, user_request: str, started: float) -> dict[str, Any]:
     """Answer "which devices/lights can you control?" from the local cache.
 
-    Only enabled devices are listed (those are the ones BitMon can act on);
+    Only enabled devices are listed (those are the ones Kakarot can act on);
     disabled ones are just counted so the spoken answer can point the user at
     the config page instead of claiming nothing exists.
     """
@@ -770,15 +770,15 @@ def _run_list(domain: str | None, user_request: str, started: float) -> dict[str
     if devices:
         answer = f"I can control these {label} devices: {names}."
         if disabled_count:
-            answer += f" {disabled_count} more are imported but not enabled in the BitMon config."
+            answer += f" {disabled_count} more are imported but not enabled in the Kakarot config."
     elif disabled_count:
         answer = (
             f"No {label} devices are enabled for me yet; {disabled_count} are imported but disabled. "
-            "Enable them in the BitMon configuration page, Home Assistant section."
+            "Enable them in the Kakarot configuration page, Home Assistant section."
         )
     else:
         answer = (
-            f"No {label} devices are in my cache. Import them in the BitMon configuration page, "
+            f"No {label} devices are in my cache. Import them in the Kakarot configuration page, "
             "Home Assistant section."
         )
     result: dict[str, Any] = {
@@ -846,7 +846,7 @@ async def execute_home_assistant_request(
     """
     started = time.perf_counter()
     if not _ha_config().get("enabled"):
-        return _error("Home Assistant MCP is disabled in BitMon config.", started)
+        return _error("Home Assistant MCP is disabled in Kakarot config.", started)
 
     url = _ha_url()
     if not url:

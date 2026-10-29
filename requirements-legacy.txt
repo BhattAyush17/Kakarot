@@ -1,0 +1,2 @@
+# Existing Inworld/OpenAI/Anthropic/local-model feature set.
+-r requirements-core.txt

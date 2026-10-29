@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BitMon Config</title>
+  <title>Kakarot Config</title>
   <link rel="icon" href="/favicon.ico" sizes="any" />
   <link rel="icon" type="image/png" href="/app-icon.png" />
   <link rel="apple-touch-icon" href="/app-icon.png" />
@@ -1376,7 +1376,7 @@
       <div class="brand">
         <img class="brand-icon" src="/app-icon.png" alt="" aria-hidden="true" />
         <div>
-          <h1 data-i18n="app.title">BitMon Config</h1>
+          <h1 data-i18n="app.title">Kakarot Config</h1>
           <p class="subtitle" data-i18n="app.subtitle">Central configuration for the character, model, microphone, and overlay.</p>
         </div>
       </div>
@@ -1436,7 +1436,7 @@
           <label class="switch-field">
             <span class="switch-label">
               <span data-i18n="fields.voiceResponse">Voice response</span>
-              <span class="switch-hint" data-i18n="fields.voiceResponseHint">When off, BitMon only prints the text response.</span>
+              <span class="switch-hint" data-i18n="fields.voiceResponseHint">When off, Kakarot only prints the text response.</span>
             </span>
             <span class="switch-control">
               <input name="tts.enabled" id="voice-response-toggle" type="checkbox" />
@@ -1452,6 +1452,7 @@
                   <option value="inworld">Inworld</option>
                   <option value="openai">OpenAI</option>
                   <option value="anthropic">Claude (Anthropic)</option>
+                  <option value="gemini">Gemini Live</option>
                   <option value="local">LM Studio</option>
                 </select>
               </label>
@@ -1495,6 +1496,20 @@
               </label>
               <label><span data-i18n="fields.maxTokens">Max tokens</span>
                 <input name="anthropic.max_tokens" type="number" min="32" max="4096" step="1" />
+              </label>
+            </div>
+            <div class="grid" id="llm-gemini-fields" hidden>
+              <label><span>Gemini API key</span>
+                <input name="secrets.gemini_api_key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current key" />
+              </label>
+              <label><span>Live voice model</span>
+                <input name="gemini.live_model" autocomplete="off" placeholder="gemini-3.8-live" />
+              </label>
+              <label><span>Document model</span>
+                <input name="gemini.document_model" autocomplete="off" placeholder="gemini-3.8-flash" />
+              </label>
+              <label><span>Voice</span>
+                <input name="gemini.voice" autocomplete="off" placeholder="Kore" />
               </label>
             </div>
             <div class="grid" id="llm-local-fields" hidden>
@@ -2141,8 +2156,8 @@
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (input, init = {}) => {
       const headers = new Headers(init.headers || {});
-      if (window.BITMON_LOCAL_TOKEN && window.BITMON_TOKEN_HEADER) {
-        headers.set(window.BITMON_TOKEN_HEADER, window.BITMON_LOCAL_TOKEN);
+      if (window.KAKAROT_LOCAL_TOKEN && window.KAKAROT_TOKEN_HEADER) {
+        headers.set(window.KAKAROT_TOKEN_HEADER, window.KAKAROT_LOCAL_TOKEN);
       }
       return nativeFetch(input, {...init, headers});
     };
@@ -2169,6 +2184,7 @@
     const llmInworldFields = document.querySelector("#llm-inworld-fields");
     const llmOpenAiFields = document.querySelector("#llm-openai-fields");
     const llmAnthropicFields = document.querySelector("#llm-anthropic-fields");
+    const llmGeminiFields = document.querySelector("#llm-gemini-fields");
     const llmLocalFields = document.querySelector("#llm-local-fields");
     const ttsSection = document.querySelector("#tts-section");
     const ttsInworldFields = document.querySelector("#tts-inworld-fields");
@@ -2523,14 +2539,15 @@
       llmInworldFields.hidden = llmProvider !== "inworld";
       llmOpenAiFields.hidden = llmProvider !== "openai";
       llmAnthropicFields.hidden = llmProvider !== "anthropic";
+      llmGeminiFields.hidden = llmProvider !== "gemini";
       llmLocalFields.hidden = llmProvider !== "local";
-      ttsSection.hidden = !voiceEnabled;
+      ttsSection.hidden = !voiceEnabled || llmProvider === "gemini";
       ttsInworldFields.hidden = !voiceEnabled || ttsProvider !== "inworld";
       ttsKokoroFields.hidden = !voiceEnabled || ttsProvider !== "kokoro";
       // The Inworld API key lives in the LLM section when the LLM is Inworld;
       // otherwise it shows next to the Inworld TTS fields (never in both).
       ttsInworldKeyField.hidden = llmProvider === "inworld";
-      whisperHotkeyField.hidden = false;
+      whisperHotkeyField.hidden = llmProvider === "gemini";
     }
 
     function ensureSelectValue(select, value, label) {
@@ -4390,7 +4407,7 @@
         safe[hi] = `<span style="color:${sub.highlight_color || "#ff5757"}; font-weight:900">${safe[hi]}</span>`;
         themePreviewText.innerHTML = safe.join(" ");
       }
-      const characterName = (document.querySelector('[name="character.name"]')?.value || "BitMon").trim();
+      const characterName = (document.querySelector('[name="character.name"]')?.value || "Kakarot").trim();
       themePreviewName.hidden = !sub.name_tag || !characterName;
       themePreviewName.textContent = characterName.toUpperCase();
       themePreviewName.style.color = sub.name_color;

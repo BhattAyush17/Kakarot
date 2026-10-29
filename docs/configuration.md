@@ -1,6 +1,6 @@
 # Configuration UI — every tab
 
-The configuration page is the control center for BitMon. Open it at:
+The configuration page is the control center for Kakarot. Open it at:
 
 ```
 http://127.0.0.1:8000/config
@@ -342,20 +342,20 @@ These are mostly for advanced setups and packaging:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `BITMON_HOST` | `127.0.0.1` | Backend bind address |
-| `BITMON_PORT` | `8000` | Backend port |
-| `BITMON_CONFIG_PATH` | *(in backend folder)* | Path to `bitmon_config.json` |
-| `BITMON_LOG_DIR` | `logs/` | Where logs are written |
-| `BITMON_CACHE_DIR` | `cache/` | Integration cache folder |
-| `BITMON_ENABLE_DOCS` | off | Enable `/docs`, `/redoc`, `/openapi.json` |
-| `BITMON_ENABLE_MCP` | off | Enable the `/mcp` HTTP mount |
-| `BITMON_ALLOWED_ORIGINS` | local only | Comma-separated CORS origins |
+| `KAKAROT_HOST` | `127.0.0.1` | Backend bind address |
+| `KAKAROT_PORT` | `8000` | Backend port |
+| `KAKAROT_CONFIG_PATH` | *(in backend folder)* | Path to `kakarot_config.json` |
+| `KAKAROT_LOG_DIR` | `logs/` | Where logs are written |
+| `KAKAROT_CACHE_DIR` | `cache/` | Integration cache folder |
+| `KAKAROT_ENABLE_DOCS` | off | Enable `/docs`, `/redoc`, `/openapi.json` |
+| `KAKAROT_ENABLE_MCP` | off | Enable the `/mcp` HTTP mount |
+| `KAKAROT_ALLOWED_ORIGINS` | local only | Comma-separated CORS origins |
 
 Example:
 
 ```powershell
-$env:BITMON_PORT="8123"
-$env:BITMON_ENABLE_DOCS="1"
+$env:KAKAROT_PORT="8123"
+$env:KAKAROT_ENABLE_DOCS="1"
 python main.py
 ```
 

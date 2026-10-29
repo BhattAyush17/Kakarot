@@ -1,0 +1,3 @@
+# Optional SDKs used by the Gemini runtime's repository-backed screen tools.
+# The lightweight daemon can start and use its native tool set without these.
+openai>=1.30,<3

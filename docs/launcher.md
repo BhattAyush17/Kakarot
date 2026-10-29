@@ -1,6 +1,6 @@
 # The launcher
 
-`launcher.py` is the friendly front door to BitMon. It's a small always-on-top
+`launcher.py` is the friendly front door to Kakarot. It's a small always-on-top
 window (PySide6) that sets up the environment, starts and supervises both
 processes, streams their logs, and then gets out of your way in the system tray.
 
@@ -38,10 +38,10 @@ The four icons in the title bar:
 |---|---|
 | ⚙️ | **Open configuration** — opens `http://127.0.0.1:8000/config` in your browser |
 | ▤ | **Show/hide advanced** — expands the window to reveal live log tabs |
-| ⤓ | **Send to tray** — hides the window; BitMon keeps running |
+| ⤓ | **Send to tray** — hides the window; Kakarot keeps running |
 | ✕ | **Close all** — stops the persona and backend and quits |
 
-Closing the window with the OS close button **does not quit** — it sends BitMon
+Closing the window with the OS close button **does not quit** — it sends Kakarot
 to the tray. Use ✕ (or the tray menu's *Close*) to fully stop everything.
 
 ### System tray
@@ -102,15 +102,15 @@ The launcher passes these to the child processes (you can override any of them
 before launching — see
 [Configuration → Environment variables](configuration.md#environment-variables)):
 
-- `BITMON_HOST` / `BITMON_PORT` — where the backend binds (default
+- `KAKAROT_HOST` / `KAKAROT_PORT` — where the backend binds (default
   `127.0.0.1:8000`).
-- `BITMON_CONFIG_PATH` — your `bitmon_config.json`.
-- `BITMON_LOG_DIR` — the `logs/` folder.
-- `BITMON_CACHE_DIR` — the integration `cache/` folder.
+- `KAKAROT_CONFIG_PATH` — your `kakarot_config.json`.
+- `KAKAROT_LOG_DIR` — the `logs/` folder.
+- `KAKAROT_CACHE_DIR` — the integration `cache/` folder.
 
 When run from source these all resolve **inside the backend folder**, which keeps
 a published/standalone copy self-contained. (When packaged as an installed app
-they move under `%LOCALAPPDATA%\BitMon`.)
+they move under `%LOCALAPPDATA%\Kakarot`.)
 
 > [!NOTE]
 > **Launcher icon.** The window/tray icon is loaded from `web/app-icon.ico` and

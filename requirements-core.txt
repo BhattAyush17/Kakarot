@@ -1,3 +1,4 @@
+# Legacy/full profile. The default lightweight Gemini profile is requirements-light.txt.
 # FastAPI
 fastapi>=0.111.0
 uvicorn[standard]>=0.29.0
@@ -21,6 +22,13 @@ openwakeword>=0.6.0
 # Session WebSocket
 websockets>=12.0
 
+# Native GNOME control plane: pure-Python D-Bus, so the daemon needs no gi
+# (PyGObject/GTK4 stay in /usr/bin/python3 for the front end).
+jeepney>=0.9.0
+
+# Web ingestion (low-memory Markdown extraction)
+trafilatura>=1.6.0
+
 # MCP + local desktop tools
 mcp>=1.13.0
 mss>=9.0.1
@@ -31,6 +39,8 @@ Pillow>=10.0.0
 # Utilities
 python-multipart>=0.0.9
 keyring>=25.0.0
+cryptography>=42.0.0
+psutil>=6,<8
 
 # Persona PySide frontend
 PySide6>=6.7.0
