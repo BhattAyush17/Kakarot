@@ -418,7 +418,7 @@ async def test_agent_loop() -> None:
             self.calls = 0
         async def generate_content(self, **_):
             self.calls += 1
-            if self.calls < 3:
+            if self.calls < 2:
                 raise RuntimeError("429 rate limit")
             return FakeResp(1)
     svc2 = KakarotLiveService(api_key="k", model="m", audio=FakeAudio(), tools=FakeTools())
@@ -428,7 +428,10 @@ async def test_agent_loop() -> None:
     try:
         await svc2.agent_loop(UserContent())
         dt = time.perf_counter() - t0
-        record("429 exponential backoff", "live", svc2._client.models.calls == 3 and 2.5 < dt < 8,
+        # The shared request deadline limits each candidate to two attempts:
+        # one failure, one backoff, one final try. A third call would mean the
+        # retry budget grew and a slow model could eat the whole turn.
+        record("429 exponential backoff", "live", svc2._client.models.calls == 2 and 0.9 < dt < 3,
                f"calls={svc2._client.models.calls} dt={dt:.2f}")
     except Exception as e:  # noqa: BLE001
         record("429 exponential backoff", "live", False, f"uncaught {e}")
