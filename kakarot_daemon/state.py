@@ -37,6 +37,10 @@ _FIELDS: dict[str, Any] = {
     "processing": False,
     # Playback facts reported by AudioBridge.
     "speaking": False,
+    # The tool currently executing, if any; drives the TOOL_CALL phase.
+    "tool": "",
+    # Connection instability reported by the recovery watchdog (amber LED).
+    "unstable": False,
     # Startup failure; empty whenever the voice path is healthy.
     "error": "",
     # Reminder facts reported by ReminderScheduler.
@@ -67,17 +71,24 @@ def _in_loop_thread(loop: asyncio.AbstractEventLoop | None) -> bool:
 
 
 def derive_phase(fields: dict[str, Any]) -> str:
-    """Reduce reported events to the one phase a client should render."""
+    """Reduce reported events to the one phase a client should render.
+
+    Active work always outranks the microphone gate: a turn mutes the mic
+    while it thinks, so muted-first ordering would hide THINKING, TOOL_CALL
+    and SPEAKING behind IDLE_MUTED.
+    """
     if fields["error"]:
         return "ERROR"
+    if fields.get("unstable"):
+        return "UNSTABLE"
+    if fields["speaking"]:
+        return "SPEAKING"
+    if fields["processing"]:
+        return "TOOL_CALL" if fields.get("tool") else "THINKING"
     if fields["muted"]:
         return "IDLE_MUTED"
     if not fields["connected"]:
         return "DISCONNECTED"
-    if fields["processing"]:
-        return "PROCESSING_TOOL"
-    if fields["speaking"]:
-        return "SPEAKING"
     return "LISTENING"
 
 
@@ -168,6 +179,8 @@ class DaemonState:
             "connected": fields["connected"],
             "processing": fields["processing"],
             "speaking": fields["speaking"],
+            "tool": fields["tool"],
+            "unstable": fields["unstable"],
             "error": fields["error"],
             "reminders": list(fields["reminders"]),
             "repository_error": fields["repository_error"],

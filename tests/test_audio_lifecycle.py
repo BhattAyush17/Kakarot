@@ -730,6 +730,116 @@ class MascotLayoutTests(unittest.TestCase):
             "Voice Unactivated" if before else "Voice Activated",
         )
 
+    def test_speech_bubble_uses_the_terminal_theme(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        sheet = mascot.bubble.styleSheet()
+
+        self.assertIn("rgba(0, 0, 0, 0.85)", sheet)
+        self.assertIn("border: 1px solid #ffffff", sheet)
+        self.assertIn("border-radius: 0px", sheet)
+        self.assertIn("font-family: monospace", sheet)
+        self.assertIn("padding: 4px 8px", sheet)
+
+    def test_state_phase_drives_the_terminal_bubble(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "muted": True,
+                    "processing": True,
+                    "phase": "THINKING",
+                },
+            }
+        )
+        self.assertEqual(mascot.bubble_label.text(), "[~] Processing...")
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "muted": True,
+                    "processing": True,
+                    "tool": "manage_network",
+                    "phase": "TOOL_CALL",
+                },
+            }
+        )
+        self.assertEqual(
+            mascot.bubble_label.text(), "[>] Running: manage_network..."
+        )
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "muted": True,
+                    "speaking": True,
+                    "phase": "SPEAKING",
+                },
+            }
+        )
+        self.assertEqual(mascot.bubble_label.text(), "[+] Speaking...")
+
+        # The follow-up window reopens the mic: the bubble falls back to
+        # listening instead of keeping the stale SPEAKING text.
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "muted": False,
+                    "speaking": False,
+                    "phase": "LISTENING",
+                },
+            }
+        )
+        self.assertEqual(mascot.bubble_label.text(), "[*] Listening...")
+
+    def test_unstable_connection_turns_the_led_amber(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        mascot._daemon_connected = True
+        mascot._api_connected = True
+        mascot._update_health()
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "unstable": True,
+                    "error": "",
+                    "muted": True,
+                    "phase": "UNSTABLE",
+                },
+            }
+        )
+
+        self.assertTrue(mascot._unstable)
+        self.assertIn(mascot.LED_AMBER, mascot.status_led.styleSheet())
+        self.assertIn("unstable", mascot.status_led.toolTip().lower())
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "unstable": False,
+                    "error": "",
+                    "muted": False,
+                    "phase": "LISTENING",
+                },
+            }
+        )
+        self.assertIn(mascot.LED_GREEN, mascot.status_led.styleSheet())
+
 
 if __name__ == "__main__":
     unittest.main()

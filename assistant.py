@@ -1361,7 +1361,7 @@ class FloatingAssistant(QWidget):
         if phase == "LISTENING":
             self.mic_button.setChecked(True)
             self.bubble.show_text("Listening…")
-        elif phase == "PROCESSING_TOOL":
+        elif phase in {"THINKING", "TOOL_CALL", "PROCESSING_TOOL"}:
             self.mic_button.setChecked(False)
             self.bubble.show_text("Thinking…")
         elif phase == "SPEAKING":
