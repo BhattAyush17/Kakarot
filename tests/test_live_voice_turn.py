@@ -14,7 +14,7 @@ import struct
 from collections import deque
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from google.genai import types
@@ -145,14 +145,17 @@ def test_desktop_telemetry_is_appended_to_the_system_instruction() -> None:
         {"name": "Kakarot"},
         {"stt_language": "en"},
         "The user is working on the voice pipeline.",
-        "Volume 40%, Dark Mode active, Wi-Fi connected to HomeNetwork",
+        'Volume 40%, Dark Mode active, Wi-Fi connected to HomeNetwork, '
+        'Active Window: "Firefox - GitHub"',
     )
 
     assert "Prior Context: The user is working on the voice pipeline." in instruction
-    assert (
-        "Current State: Volume 40%, Dark Mode active, "
-        "Wi-Fi connected to HomeNetwork"
-    ) in instruction
+    # Situational awareness is the last thing the model reads.
+    assert instruction.endswith(
+        'Current State: Volume 40%, Dark Mode active, '
+        'Wi-Fi connected to HomeNetwork, '
+        'Active Window: "Firefox - GitHub"'
+    )
 
 
 def test_desktop_telemetry_uses_fast_bounded_probes() -> None:
@@ -187,16 +190,88 @@ def test_desktop_telemetry_uses_fast_bounded_probes() -> None:
 def test_desktop_telemetry_is_cached_briefly() -> None:
     service = _service(FakeAudio())
 
+    async def scenario():
+        first = await service._get_desktop_telemetry()
+        second = await service._get_desktop_telemetry()
+        return first, second
+
     with patch.object(
         live_module,
-        "_collect_desktop_telemetry",
-        return_value="Volume 40%, Dark Mode active",
+        "_collect_desktop_telemetry_async",
+        new=AsyncMock(return_value="Volume 40%, Dark Mode active"),
     ) as collect:
-        first = service._get_desktop_telemetry()
-        second = service._get_desktop_telemetry()
+        first, second = asyncio.run(scenario())
 
     assert first == second == "Volume 40%, Dark Mode active"
-    assert collect.call_count == 1
+    assert collect.await_count == 1
+
+
+def test_active_window_title_uses_the_dbus_context_probe() -> None:
+    completed = SimpleNamespace(
+        stdout='   string "Firefox - GitHub"\n'
+    )
+    with patch.object(
+        live_module.subprocess, "run", return_value=completed
+    ) as run:
+        title = asyncio.run(live_module._get_active_window_title())
+
+    assert title == "Firefox - GitHub"
+    argv = run.call_args.args[0]
+    assert argv[0] == "dbus-send"
+    assert argv[1] == "--print-reply=literal"
+    assert any("org.kakarot.Context" in arg for arg in argv)
+    assert any("/org/kakarot/Context" in arg for arg in argv)
+    assert argv[-1] == "org.kakarot.Context.GetActiveTitle"
+    assert run.call_args.kwargs["timeout"] == live_module.WINDOW_TITLE_TIMEOUT_SECONDS
+
+
+def test_active_window_title_falls_back_when_extension_disabled() -> None:
+    blocked = SimpleNamespace(stdout="\n")
+    with patch.object(live_module.subprocess, "run", return_value=blocked):
+        title = asyncio.run(live_module._get_active_window_title())
+    assert title == "Restricted by Wayland Compositor"
+
+    with patch.object(
+        live_module.subprocess,
+        "run",
+        side_effect=asyncio.TimeoutError(),
+    ):
+        timed_out = asyncio.run(live_module._get_active_window_title())
+    assert timed_out == "Restricted by Wayland Compositor"
+
+    with patch.object(
+        live_module.subprocess, "run", side_effect=FileNotFoundError("dbus-send")
+    ):
+        missing = asyncio.run(live_module._get_active_window_title())
+    assert missing == "Restricted by Wayland Compositor"
+
+
+def test_async_desktop_telemetry_appends_the_active_window() -> None:
+    def fake_probe(argv, **_kwargs):
+        if argv[0] == "wpctl":
+            return "Volume: 0.40\n"
+        if argv[0] == "gsettings":
+            return "'prefer-dark'\n"
+        if argv[0] == "nmcli":
+            return "yes:HomeNetwork\n"
+        raise AssertionError(argv)
+
+    async def scenario():
+        return await live_module._collect_desktop_telemetry_async()
+
+    with patch.object(
+        live_module, "_telemetry_command", side_effect=fake_probe
+    ), patch.object(
+        live_module,
+        "_get_active_window_title",
+        new=AsyncMock(return_value="Firefox - GitHub"),
+    ):
+        telemetry = asyncio.run(scenario())
+
+    assert telemetry == (
+        'Volume 40%, Dark Mode active, Wi-Fi connected to HomeNetwork, '
+        'Active Window: "Firefox - GitHub"'
+    )
 
 
 def test_local_endpointing_ends_on_trailing_silence() -> None:
@@ -809,6 +884,34 @@ def test_submit_content_publishes_a_fresh_thinking_phase() -> None:
 
     assert {"processing": True, "muted": True, "tool": ""} in changes
     assert {"processing": False} in changes
+
+
+def test_concurrent_submissions_are_serialized() -> None:
+    """A queued manual turn must not interleave with the active turn's history."""
+    service, _changes = _tracked_service(FakeAudio())
+    service._initialized.set()
+    service._types = types
+    service._client = SimpleNamespace()
+    order: list[str] = []
+
+    async def fake_agent_loop(_content: Any) -> str:
+        order.append("start")
+        await asyncio.sleep(0.01)
+        order.append("end")
+        return "answer"
+
+    service.agent_loop = fake_agent_loop
+    content = types.Content(role="user", parts=[types.Part(text="hello")])
+
+    async def run() -> None:
+        await asyncio.gather(
+            service._submit_content(content),
+            service._submit_content(content),
+        )
+
+    asyncio.run(run())
+
+    assert order == ["start", "end", "start", "end"]
 
 
 def test_follow_up_window_auto_mutes_without_speech() -> None:
