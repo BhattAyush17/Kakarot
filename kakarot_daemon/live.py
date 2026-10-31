@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import subprocess
-import threading
 import time
 import wave
 from collections import deque
@@ -58,6 +57,12 @@ LOGGER = logging.getLogger(__name__)
 # PipeWire, NetworkManager, or dconf.
 DESKTOP_TELEMETRY_TIMEOUT_SECONDS = 0.5
 DESKTOP_TELEMETRY_CACHE_SECONDS = 60.0
+# The focused-window probe rides the same tiny budget. When Wayland (or a
+# hardened GNOME) hides the compositor state, the model gets an explicit
+# restriction marker instead of a misleading empty field.
+WINDOW_TITLE_TIMEOUT_SECONDS = 0.5
+WINDOW_TITLE_FALLBACK = "Restricted by Wayland Compositor"
+WINDOW_TITLE_MAX_CHARS = 120
 
 
 def _telemetry_environment() -> dict[str, str]:
@@ -143,36 +148,123 @@ def _format_wifi_telemetry(stdout: str) -> str:
     return "Wi-Fi disconnected"
 
 
-def _collect_desktop_telemetry() -> str:
-    """Collect a compact, best-effort desktop state string.
+def _format_active_window_title(stdout: str) -> str:
+    """Extract the window title from a D-Bus ``string`` reply.
 
-    Every probe is independent: one missing utility or a desktop component
-    that is slow to answer simply omits its fragment instead of failing the
-    prompt.
+    The ``org.kakarot.Context.GetActiveTitle`` method returns a plain
+    ``string``, so ``--print-reply=literal`` renders it as
+    ``string "Firefox - GitHub"`` (no boolean wrapper).
     """
-    parts: list[str] = []
+    text = str(stdout or "").strip()
+    if not text:
+        return ""
+    # With --print-reply=literal a successful string reply starts with ``string ``.
+    match = re.search(r'string\s+"((?:[^"\\]|\\.)*)"', text, re.IGNORECASE)
+    if match is not None:
+        value = match.group(1)
+    else:
+        # Fallback: grab the first double-quoted token.
+        match = re.search(r'"([^"]*)"', text)
+        value = match.group(1) if match is not None else text
+    value = (
+        value.replace('\\"', '"').replace("\\'", "'").replace("\\\\", "\\")
+    )
+    value = " ".join(value.split())
+    return value[:WINDOW_TITLE_MAX_CHARS]
 
-    volume = _telemetry_command(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"])
+
+async def _get_active_window_title() -> str:
+    """Ask the Kakarot GNOME Shell extension for the focused window title.
+
+    Uses the new D-Bus endpoint exported by the ``kakarot-context@tensorttx.FusionNova``
+    extension: ``org.kakarot.Context /org/kakarot/Context GetActiveTitle``.
+
+    Falls back to ``WINDOW_TITLE_FALLBACK`` when the extension is disabled,
+    Wayland blocks the call, or the timeout expires.
+    """
+    argv = [
+        "dbus-send",
+        "--print-reply=literal",
+        "--session",
+        "--dest=org.kakarot.Context",
+        "/org/kakarot/Context",
+        "org.kakarot.Context.GetActiveTitle",
+    ]
+    try:
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            argv,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=WINDOW_TITLE_TIMEOUT_SECONDS,
+            check=False,
+            env=_telemetry_environment(),
+        )
+    except Exception:  # noqa: BLE001 - situational context must never fail a turn
+        return WINDOW_TITLE_FALLBACK
+    title = _format_active_window_title(str(completed.stdout or ""))
+    return title or WINDOW_TITLE_FALLBACK
+
+
+def _compose_desktop_telemetry(
+    volume: str | None,
+    theme: str | None,
+    wifi: str | None,
+    title: str = "",
+) -> str:
+    """Format probe output; one missing fragment never hides the others."""
+    parts: list[str] = []
     if volume is not None:
         formatted = _format_audio_telemetry(volume)
         if formatted:
             parts.append(formatted)
-
-    theme = _telemetry_command(
-        ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"]
-    )
     if theme is not None:
         formatted = _format_theme_telemetry(theme)
         if formatted:
             parts.append(formatted)
-
-    wifi = _telemetry_command(
-        ["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"]
-    )
     if wifi is not None:
         parts.append(_format_wifi_telemetry(wifi))
-
+    title = str(title or "").strip()
+    if title:
+        parts.append(f'Active Window: "{title}"')
     return ", ".join(parts)
+
+
+async def _collect_desktop_telemetry_async() -> str:
+    """Run every probe concurrently, including the focused window query."""
+    volume, theme, wifi, title = await asyncio.gather(
+        asyncio.to_thread(
+            _telemetry_command, ["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"]
+        ),
+        asyncio.to_thread(
+            _telemetry_command,
+            ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"],
+        ),
+        asyncio.to_thread(
+            _telemetry_command, ["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"]
+        ),
+        _get_active_window_title(),
+    )
+    return _compose_desktop_telemetry(volume, theme, wifi, title)
+
+
+def _collect_desktop_telemetry() -> str:
+    """Collect a compact, best-effort desktop state string without D-Bus.
+
+    Every probe is independent: one missing utility or a desktop component
+    that is slow to answer simply omits its fragment instead of failing the
+    prompt. The live turn path uses :func:`_collect_desktop_telemetry_async`,
+    which adds the focused window.
+    """
+    volume = _telemetry_command(["wpctl", "get-volume", "@DEFAULT_AUDIO_SINK@"])
+    theme = _telemetry_command(
+        ["gsettings", "get", "org.gnome.desktop.interface", "color-scheme"]
+    )
+    wifi = _telemetry_command(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+    return _compose_desktop_telemetry(volume, theme, wifi)
 
 
 def _build_system_instruction(
@@ -942,13 +1034,19 @@ class KakarotLiveService:
         self._stop = asyncio.Event()
         self._connected = False
         self.tool_active = False
+        # Voice, wake-word, and queued manual turns all append to ``_history``.
+        # They must never interleave: a second Gemini request in the middle of
+        # an active one would corrupt the transcript and the tool protocol.
+        # ``_turn_lock`` guards the agent loop; ``_submit_lock`` additionally
+        # holds the microphone gate closed while a turn waits its turn, so a
+        # queued input cannot mute the microphone underneath a speaking turn.
+        self._submit_lock = asyncio.Lock()
         self._history: list[Any] = []
         self._rolling_summary = ""
         self._pending_summary_text = ""
         self._summary_task: asyncio.Task[None] | None = None
         self._desktop_telemetry = ""
         self._desktop_telemetry_at = 0.0
-        self._desktop_telemetry_thread: threading.Thread | None = None
         self._character: dict[str, Any] | None = None
         self._speech_config: dict[str, Any] = {}
         self._client = None
@@ -1030,22 +1128,12 @@ class KakarotLiveService:
 
     # -- rolling context --------------------------------------------------
 
-    def _refresh_desktop_telemetry(self) -> None:
-        """Refresh the cached state on a worker thread."""
-        try:
-            telemetry = _collect_desktop_telemetry()
-        except Exception:  # noqa: BLE001 - context is optional
-            telemetry = ""
-        self._desktop_telemetry = telemetry
-        self._desktop_telemetry_at = time.monotonic()
+    async def _get_desktop_telemetry(self) -> str:
+        """Return the cached desktop state, refreshing it at most once a minute.
 
-    def _get_desktop_telemetry(self) -> str:
-        """Return cached desktop state without blocking the voice loop.
-
-        Called from the event loop, a stale cache starts one daemon thread and
-        returns the previous value while it refreshes. Outside a running loop
-        (startup/tests), it may collect synchronously because there is no turn
-        to protect.
+        The active-window query is awaited on the caller's loop (it only waits
+        on a bounded subprocess, never on the PortAudio callback). A probe
+        failure keeps the previous snapshot instead of blanking the prompt.
         """
         now = time.monotonic()
         if (
@@ -1054,34 +1142,20 @@ class KakarotLiveService:
             < DESKTOP_TELEMETRY_CACHE_SECONDS
         ):
             return self._desktop_telemetry
-
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            self._refresh_desktop_telemetry()
-            return self._desktop_telemetry
-
-        if (
-            self._desktop_telemetry_thread is None
-            or not self._desktop_telemetry_thread.is_alive()
-        ):
-            thread = threading.Thread(
-                target=self._refresh_desktop_telemetry,
-                name="kakarot-desktop-telemetry",
-                daemon=True,
-            )
-            self._desktop_telemetry_thread = thread
-            thread.start()
+            telemetry = await _collect_desktop_telemetry_async()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - context is optional
+            telemetry = ""
+        if telemetry:
+            self._desktop_telemetry = telemetry
+        self._desktop_telemetry_at = time.monotonic()
         return self._desktop_telemetry
 
     async def _prime_desktop_telemetry(self) -> None:
-        """Populate the first prompt without putting probes on the voice path."""
-        try:
-            telemetry = await asyncio.to_thread(_collect_desktop_telemetry)
-        except Exception:  # noqa: BLE001 - context is optional
-            telemetry = ""
-        self._desktop_telemetry = telemetry
-        self._desktop_telemetry_at = time.monotonic()
+        """Populate the first prompt before the microphone opens."""
+        await self._get_desktop_telemetry()
 
     def _refresh_system_instruction(self) -> None:
         """Rebuild the prompt after a background summary update.
@@ -1095,7 +1169,7 @@ class KakarotLiveService:
             self._character,
             self._speech_config,
             self._rolling_summary,
-            self._get_desktop_telemetry(),
+            self._desktop_telemetry,
         )
         self._system_instruction = base + ADAPTIVE_TOOL_PROMPT
         if self._types is not None and self._all_declarations:
@@ -2222,25 +2296,30 @@ class KakarotLiveService:
         if not self._client or not self._types or self._stop.is_set():
             raise RuntimeError("The core intent processor is unavailable")
 
-        # Close the gate for the whole tool/model turn. The answer path
-        # (``speak``) owns the decision to reopen it: continuous follow-up is
-        # opt-in, and restoring the pre-turn gate here would defeat both the
-        # post-answer mute and a user mute requested while the model is thinking.
-        self._audio.set_muted(True)
-        self._audio.discard_input()
-        # A new turn starts in THINKING; a leftover tool name from the previous
-        # turn must not leak into this phase.
-        self._changed(processing=True, muted=True, tool="")
-        self.tool_active = True
-        try:
-            # Keep the one-argument call shape for tests and embedders that
-            # replace ``agent_loop`` with a simple stub.
-            if hint:
-                return await self.agent_loop(content, hint=hint)
-            return await self.agent_loop(content)
-        finally:
-            self.tool_active = False
-            self._changed(processing=False)
+        # Wait for any active turn before touching the microphone gate or the
+        # shared history. The socket answers "queued" immediately, so the wait
+        # happens only in the background task that owns this turn.
+        async with self._submit_lock:
+            # Close the gate for the whole tool/model turn. The answer path
+            # (``speak``) owns the decision to reopen it: continuous follow-up
+            # is opt-in, and restoring the pre-turn gate here would defeat both
+            # the post-answer mute and a user mute requested while the model is
+            # thinking.
+            self._audio.set_muted(True)
+            self._audio.discard_input()
+            # A new turn starts in THINKING; a leftover tool name from the
+            # previous turn must not leak into this phase.
+            self._changed(processing=True, muted=True, tool="")
+            self.tool_active = True
+            try:
+                # Keep the one-argument call shape for tests and embedders that
+                # replace ``agent_loop`` with a simple stub.
+                if hint:
+                    return await self.agent_loop(content, hint=hint)
+                return await self.agent_loop(content)
+            finally:
+                self.tool_active = False
+                self._changed(processing=False)
 
     async def agent_loop(
         self, user_input_content: Any, *, hint: str = ""
@@ -2253,6 +2332,11 @@ class KakarotLiveService:
         self, user_input_content: Any, *, hint: str = ""
     ) -> str:
         """Run one user turn and publish its complete request/token ledger."""
+        # Situational awareness is refreshed before the prompt is assembled.
+        # Embedders that run the service without a repository have no
+        # character/prompt and skip the desktop probes entirely.
+        if self._character is not None:
+            await self._get_desktop_telemetry()
         self._prepare_turn(hint)
         # Every turn gets one fresh recovery attempt and one stall notice.
         self._recovery_attempted = False

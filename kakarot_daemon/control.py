@@ -18,6 +18,10 @@ from kakarot_daemon.commands import CommandRouter, ExecuteJobs
 MAX_LINE_BYTES = 8192
 HEARTBEAT_SECONDS = 5.0
 AUTH_RESPONSE_TIMEOUT_SECONDS = 60.0
+# Manual inputs are fire-and-forget: the socket answers as soon as the turn is
+# queued. A bounded backlog keeps a stuck or spamming client from growing an
+# unbounded chain of turns (and from pinning memory in the 192 MiB cgroup).
+MAX_PENDING_MANUAL_INPUTS = 4
 _LOG = logging.getLogger(__name__)
 
 
@@ -69,6 +73,9 @@ class ControlServer:
         self._clients: set[asyncio.StreamWriter] = set()
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._authorization_waiters: dict[str, asyncio.Future[str | None]] = {}
+        # Manual turns run off the dispatch path so the client unblocks as
+        # soon as the input is accepted.
+        self._manual_tasks: set[asyncio.Task[None]] = set()
 
     async def start(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -94,6 +101,12 @@ class ControlServer:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             await asyncio.gather(self._heartbeat_task, return_exceptions=True)
+        if self._manual_tasks:
+            pending = tuple(self._manual_tasks)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            self._manual_tasks.clear()
         for waiter in tuple(self._authorization_waiters.values()):
             if not waiter.done():
                 waiter.set_result(None)
@@ -233,7 +246,12 @@ class ControlServer:
             return {"ok": False, "error": "invalid event envelope"}
 
         if msg_type in {"auth_response", "human_response"}:
-            return self._handle_auth_response(payload)
+            # Resolving the waiter only wakes the tool task that is already
+            # awaiting it; the tool itself keeps running in the agent loop.
+            response = self._handle_auth_response(payload)
+            if response.get("ok"):
+                response["status"] = "accepted"
+            return response
 
         if msg_type == "audio_control":
             speaker_muted = payload.get("speaker_muted")
@@ -252,16 +270,22 @@ class ControlServer:
                 return {"ok": False, "error": "invalid manual input"}
             if self._manual_input is None:
                 return {"ok": False, "error": "manual input is unavailable"}
-            await self.broadcast("ui_say", {"text": "Working on that…", "status": "busy"})
-            try:
-                answer = await self._manual_input(text.strip())
-            except Exception as exc:
-                message_text = str(exc)[:200] or "Manual input failed."
-                await self._ui_say(message_text, "error")
-                return {"ok": False, "error": message_text}
-            if answer:
-                await self._ui_say(str(answer), "idle")
-            return {"ok": True}
+            pending = sum(1 for task in self._manual_tasks if not task.done())
+            if pending >= MAX_PENDING_MANUAL_INPUTS:
+                return {
+                    "ok": False,
+                    "status": "busy",
+                    "error": "Kakarot is still working on earlier requests.",
+                }
+            # A turn can take tens of seconds. Run it in its own task and let
+            # the service serialize it behind the active turn; awaiting here
+            # would block this socket (and the client's UI) for the whole turn.
+            # The busy notice is emitted by the task too, so even a wedged
+            # subscriber cannot delay the acknowledgment.
+            task = asyncio.create_task(self._run_manual_input(text.strip()))
+            self._manual_tasks.add(task)
+            task.add_done_callback(self._manual_tasks.discard)
+            return {"ok": True, "status": "queued"}
 
         if msg_type == "force_listen":
             if self._force_listen is None:
@@ -403,6 +427,23 @@ class ControlServer:
             return {"ok": False, "error": "authorization request expired or invalid"}
         waiter.set_result(choice)
         return {"ok": True}
+
+    async def _run_manual_input(self, text: str) -> None:
+        """Run one queued manual turn and report its answer to subscribers."""
+        await self.broadcast(
+            "ui_say", {"text": "Working on that…", "status": "busy"}
+        )
+        try:
+            answer = await self._manual_input(text)  # type: ignore[misc]
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one turn must not kill the daemon
+            message_text = str(exc)[:200] or "Manual input failed."
+            _LOG.warning("Manual input failed: %s", message_text)
+            await self._ui_say(message_text, "error")
+            return
+        if answer:
+            await self._ui_say(str(answer), "idle")
 
     async def _ui_say(self, text: str, status: str) -> None:
         from kakarot_daemon.scrubber import sanitize_text
