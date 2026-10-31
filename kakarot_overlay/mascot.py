@@ -13,13 +13,14 @@ from PyQt6.QtCore import (
     QEvent,
     QLockFile,
     QPoint,
+    QRect,
     QRectF,
     QSize,
     Qt,
     QTimer,
     pyqtSignal,
 )
-from PyQt6.QtGui import QFont, QIcon, QPainter, QPixmap
+from PyQt6.QtGui import QFont, QIcon, QKeySequence, QPainter, QPixmap, QShortcut
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
@@ -28,8 +29,10 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLayout,
+    QLineEdit,
     QMenu,
     QPushButton,
+    QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
@@ -152,6 +155,59 @@ def _socket_path() -> str:
     """Resolve the compatibility socket without importing daemon code."""
     runtime_dir = os.environ.get("XDG_RUNTIME_DIR", "").strip() or "/run/user/1000"
     return os.path.join(runtime_dir, "kakarot", "kakarot.sock")
+
+
+def _hud_layout_path() -> str:
+    """Where the mascot remembers its last dragged position."""
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = config_home or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "kakarot", "hud_layout.json")
+
+
+def _load_hud_layout() -> tuple[int, int] | None:
+    """Read the saved window origin, ignoring anything malformed."""
+    try:
+        with open(_hud_layout_path(), encoding="utf-8") as stream:
+            data = json.load(stream)
+        x, y = data.get("x"), data.get("y")
+    except (OSError, ValueError, AttributeError):
+        return None
+    # ``bool`` is an ``int`` subclass; a True coordinate would be nonsense.
+    if isinstance(x, bool) or isinstance(y, bool):
+        return None
+    if not isinstance(x, int) or not isinstance(y, int):
+        return None
+    return x, y
+
+
+def _save_hud_layout(x: int, y: int) -> None:
+    """Atomically persist the mascot origin, owner-readable only."""
+    path = _hud_layout_path()
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".hud-layout-", dir=directory)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"x": int(x), "y": int(y)}, stream)
+        os.replace(temporary, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _position_is_visible(x: int, y: int, size: QSize) -> bool:
+    """Reject saved coordinates that would leave the HUD effectively hidden."""
+    rect = QRect(x, y, max(1, size.width()), max(1, size.height()))
+    for screen in QApplication.screens():
+        overlap = screen.availableGeometry().intersected(rect)
+        if overlap.width() >= 80 and overlap.height() >= 80:
+            return True
+    return False
 
 
 def _mascot_window_flags():
@@ -491,6 +547,10 @@ class KakarotMascot(QWidget):
     LED_RED = "#ef4444"
     LED_AMBER = "#f59e0b"
 
+    # Emitted with the reminder title; the handler renders a passive terminal
+    # block that stays on screen until the user clicks its ``[x] Ack`` chip.
+    reminder_received = pyqtSignal(str)
+
     def __init__(self):
         super().__init__(None, _mascot_window_flags())
         self._app_icon = QIcon(str(_avatar_path())) if _avatar_path() else QIcon()
@@ -542,6 +602,13 @@ class KakarotMascot(QWidget):
         self._audio_mode = "idle"
         self._allow_close = False
         self._closing = False
+        # Outbound typed events and reminder acks wait for the single in-flight
+        # request instead of being dropped while a status poll is outstanding.
+        self._pending_events: list[tuple[str, dict]] = []
+        self._pending_acks: list[str] = []
+        self._known_reminders: set[str] = set()
+        self._reminder_queue: list[tuple[str, str]] = []
+        self._active_reminder_id = ""
 
         # A repeated desktop launch should focus the existing mascot instead of
         # appearing to do nothing after the single-instance guard exits.
@@ -594,6 +661,24 @@ class KakarotMascot(QWidget):
         self.mic_button.clicked.connect(self.toggle_microphone)
         toolbar.addWidget(self.mic_button)
 
+        self.composer_button = QPushButton("[T]", self.dock)
+        self.composer_button.setObjectName("terminalToggle")
+        self.composer_button.setFixedSize(26, 26)
+        self.composer_button.setToolTip("Type a message (Ctrl+Space)")
+        self.composer_button.setAccessibleName("Type a message to Kakarot")
+        self.composer_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.composer_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.composer_button.setStyleSheet(
+            "#terminalToggle { background: transparent; color: #ffffff; "
+            "border: 1px solid #ffffff; border-radius: 0px; "
+            "font-family: monospace; font-size: 8pt; font-weight: bold; "
+            "padding: 0; }"
+            "#terminalToggle:hover { background: #ffffff; color: #000000; }"
+            "#terminalToggle:pressed { background: #ffffff; color: #000000; }"
+        )
+        self.composer_button.clicked.connect(lambda: self.toggle_composer())
+        toolbar.insertWidget(toolbar.indexOf(self.mic_button) + 1, self.composer_button)
+
         self.speaker_button = self._make_button("volume-2", "Toggle spoken responses")
         self.speaker_button.clicked.connect(self.toggle_speaker)
         toolbar.addWidget(self.speaker_button)
@@ -602,19 +687,72 @@ class KakarotMascot(QWidget):
         self.settings_button.clicked.connect(self.open_settings)
         toolbar.addWidget(self.settings_button)
 
+        self.composer = QLineEdit(self)
+        self.composer.setObjectName("terminalComposer")
+        self.composer.setPlaceholderText("[type a message — Enter sends]")
+        self.composer.setMaxLength(4000)
+        self.composer.setMinimumWidth(228)
+        self.composer.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.composer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.composer.setStyleSheet(
+            "#terminalComposer { background-color: rgba(0, 0, 0, 0.85); "
+            "color: #ffffff; border: 1px solid #ffffff; border-radius: 0px; "
+            "font-family: monospace; padding: 4px; outline: none; "
+            "selection-background-color: #ffffff; selection-color: #000000; }"
+        )
+        self.composer.returnPressed.connect(self._submit_composer_text)
+        self.composer.installEventFilter(self)
+        self.composer.hide()
+        self.composer_shortcut = QShortcut(QKeySequence("Ctrl+Space"), self)
+        self.composer_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.composer_shortcut.activated.connect(self.toggle_composer)
+
+        self.reminder = QWidget(self)
+        self.reminder.setObjectName("reminderBubble")
+        self.reminder.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.reminder.setMaximumWidth(340)
+        reminder_row = QHBoxLayout(self.reminder)
+        reminder_row.setContentsMargins(8, 6, 8, 6)
+        reminder_row.setSpacing(8)
+        self.reminder_label = QLabel(self.reminder)
+        self.reminder_label.setObjectName("reminderText")
+        self.reminder_label.setWordWrap(True)
+        self.reminder_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.reminder_label.setAccessibleName("Kakarot reminder")
+        self.reminder_ack = QPushButton("[x] Ack", self.reminder)
+        self.reminder_ack.setObjectName("reminderAck")
+        self.reminder_ack.setFlat(True)
+        self.reminder_ack.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reminder_ack.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.reminder_ack.setAccessibleName("Acknowledge reminder")
+        self.reminder_ack.clicked.connect(lambda: self._ack_reminder())
+        reminder_row.addWidget(self.reminder_label, 1)
+        reminder_row.addWidget(self.reminder_ack, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.reminder.setStyleSheet(
+            "#reminderBubble { background-color: rgba(0, 0, 0, 0.85); "
+            "color: #ffffff; border: 1px solid #ffffff; border-radius: 0px; "
+            "font-family: monospace; padding: 6px 8px; }"
+            "#reminderText { color: #ffffff; background: transparent; "
+            "border: 0; font-family: monospace; font-size: 9pt; padding: 0; }"
+            "#reminderAck { background-color: rgba(0, 0, 0, 0.5); "
+            "color: #ffffff; border: 1px solid #ffffff; border-radius: 0px; "
+            "padding: 3px 10px; font-family: monospace; font-weight: bold; }"
+            "#reminderAck:hover { background-color: #ffffff; color: #000000; }"
+            "#reminderAck:pressed { background-color: #ffffff; color: #000000; }"
+        )
+        self.reminder_received.connect(self._on_reminder_received)
+        self.reminder.hide()
+
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(4)
         root.addWidget(self.avatar, 0, Qt.AlignmentFlag.AlignHCenter)
         root.addWidget(self.dock, 0, Qt.AlignmentFlag.AlignHCenter)
+        root.addWidget(self.composer, 0, Qt.AlignmentFlag.AlignHCenter)
+        root.addWidget(self.reminder, 0, Qt.AlignmentFlag.AlignHCenter)
         self.agency_strip = FloatingAgencyStrip()
         self.agency_strip.response_selected.connect(self._on_agency_response)
-        root.insertWidget(
-            root.indexOf(self.dock) + 1,
-            self.agency_strip,
-            0,
-            Qt.AlignmentFlag.AlignHCenter,
-        )
+        root.addWidget(self.agency_strip, 0, Qt.AlignmentFlag.AlignHCenter)
         self.agency_strip.hide()
         root.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)
         self.adjustSize()
@@ -652,16 +790,25 @@ class KakarotMascot(QWidget):
         self.poll = QTimer(self)
         self.poll.timeout.connect(lambda: self._send("status"))
         QTimer.singleShot(250, lambda: _set_x11_sticky(self))
-        screen = QApplication.primaryScreen()
-        if screen:
-            area = screen.availableGeometry()
-            self.move(area.right() - self.width() - 20, area.bottom() - self.height() - 30)
-        self.tray = QSystemTrayIcon(self._app_icon, self)
+        self._restore_position()
+        tray_icon = self._app_icon
+        if tray_icon.isNull():
+            tray_icon = QApplication.style().standardIcon(
+                QStyle.StandardPixmap.SP_ComputerIcon
+            )
+        self.tray = QSystemTrayIcon(tray_icon, self)
         self.tray.setToolTip("Kakarot")
         self.tray_menu = QMenu(self)
-        show_action = self.tray_menu.addAction("Show Mascot")
-        show_action.triggered.connect(self.show_mascot)
-        quit_action = self.tray_menu.addAction("Quit")
+        self.tray_menu.setStyleSheet(
+            "QMenu { background-color: rgba(0, 0, 0, 0.95); color: #ffffff; "
+            "border: 1px solid #ffffff; border-radius: 0px; "
+            "font-family: monospace; padding: 4px; }"
+            "QMenu::item { background: transparent; padding: 6px 18px; }"
+            "QMenu::item:selected { background-color: #ffffff; color: #000000; }"
+        )
+        toggle_action = self.tray_menu.addAction("Toggle HUD")
+        toggle_action.triggered.connect(self.toggle_hud)
+        quit_action = self.tray_menu.addAction("Quit Kakarot")
         quit_action.triggered.connect(self.close)
         self.tray.setContextMenu(self.tray_menu)
         self.tray.activated.connect(self._tray_activated)
@@ -675,6 +822,28 @@ class KakarotMascot(QWidget):
         self._update_health()
         self._post_init_started = False
         QTimer.singleShot(100, self._post_init)
+
+    def _restore_position(self) -> None:
+        """Apply the last dragged position, or the bottom-right default."""
+        saved = _load_hud_layout()
+        if saved is not None and _position_is_visible(*saved, self.size()):
+            self.move(*saved)
+            return
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(
+                area.right() - self.width() - 20,
+                area.bottom() - self.height() - 30,
+            )
+
+    def _persist_position(self) -> None:
+        if not self.isVisible():
+            return
+        try:
+            _save_hud_layout(self.x(), self.y())
+        except OSError:
+            print("Kakarot could not save its HUD position.", file=sys.stderr)
 
     def _post_init(self):
         """Start IPC only after Qt has had a chance to render the mascot."""
@@ -701,6 +870,16 @@ class KakarotMascot(QWidget):
             QSystemTrayIcon.ActivationReason.DoubleClick,
         ):
             self.show_mascot()
+
+    def toggle_hud(self):
+        """Hide or restore the HUD without stopping the daemon or tray."""
+        if self.isVisible():
+            self._persist_position()
+            self.hide()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
 
     def _make_button(self, icon_name: str, tooltip: str) -> QPushButton:
         button = QPushButton(self.dock)
@@ -825,6 +1004,130 @@ class KakarotMascot(QWidget):
             self.hide_timer.stop()
         else:
             self.hide_timer.start(5000)
+
+    # ------------------------------------------------------- composer -- #
+
+    def toggle_composer(self):
+        """Show or hide the terminal-style typed-message composer."""
+        self._set_composer_visible(not self.composer.isVisible())
+
+    def _set_composer_visible(self, visible: bool):
+        if self._closing or visible == self.composer.isVisible():
+            if visible:
+                self.composer.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            return
+        anchor = self.geometry()
+        self.composer.setVisible(visible)
+        if visible:
+            self.composer.clear()
+            self._resize_anchored(anchor)
+            self.raise_()
+            self.composer.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        else:
+            self._resize_anchored(anchor)
+
+    def _submit_composer_text(self):
+        """Send the typed turn, then clear and dismiss the composer."""
+        text = self.composer.text().strip()
+        self.composer.clear()
+        self._set_composer_visible(False)
+        if not text or self._closing:
+            return
+        self._queue_event("manual_input", {"text": text})
+
+    def _queue_event(self, event_type: str, payload: dict):
+        """Queue a typed event until the single in-flight request completes."""
+        if self._closing:
+            return
+        self._pending_events.append((event_type, dict(payload)))
+        self._flush_pending_events()
+
+    def _flush_pending_events(self):
+        if self._closing or not self._pending_events:
+            return
+        if self._request is not None:
+            QTimer.singleShot(150, self._flush_pending_events)
+            return
+        event_type, payload = self._pending_events.pop(0)
+        self._send_event(event_type, payload)
+        if self._pending_events:
+            QTimer.singleShot(150, self._flush_pending_events)
+
+    # ------------------------------------------------------- reminders -- #
+
+    def _remember_reminders(self, reminders) -> None:
+        """Queue newly due reminders and keep the current block in sync."""
+        if not isinstance(reminders, (list, tuple)):
+            return
+        current: dict[str, str] = {}
+        for item in reminders:
+            if not isinstance(item, dict):
+                continue
+            reminder_id = str(item.get("id") or "").strip()
+            title = str(item.get("title") or "Reminder").strip()
+            if reminder_id:
+                current[reminder_id] = title or "Reminder"
+        for reminder_id, title in current.items():
+            if reminder_id not in self._known_reminders:
+                self._known_reminders.add(reminder_id)
+                self._reminder_queue.append((reminder_id, title))
+        self._known_reminders.intersection_update(current)
+        # Drop entries acknowledged elsewhere (the GNOME notification, another
+        # HUD instance, or the model's cancel tool).
+        self._reminder_queue = [
+            entry for entry in self._reminder_queue if entry[0] in current
+        ]
+        if self._active_reminder_id and self._active_reminder_id not in current:
+            self._active_reminder_id = ""
+        if not self._active_reminder_id:
+            self._show_next_reminder()
+
+    def _show_next_reminder(self) -> None:
+        if self._closing:
+            return
+        if not self._reminder_queue:
+            if not self.reminder.isHidden():
+                anchor = self.geometry()
+                self.reminder.hide()
+                self._resize_anchored(anchor)
+            return
+        reminder_id, title = self._reminder_queue[0]
+        self._active_reminder_id = reminder_id
+        self.reminder_received.emit(title)
+
+    def _on_reminder_received(self, text: str) -> None:
+        text = str(text or "").strip()
+        if not text or self._closing:
+            return
+        anchor = self.geometry()
+        self.reminder_label.setText(f"[!] {text}"[:400])
+        self.reminder.show()
+        self._resize_anchored(anchor)
+        self.reminder.raise_()
+
+    def _ack_reminder(self) -> None:
+        reminder_id = self._active_reminder_id
+        self._active_reminder_id = ""
+        if reminder_id:
+            self._pending_acks.append(reminder_id)
+            self._flush_pending_acks()
+        if self._reminder_queue:
+            self._reminder_queue.pop(0)
+        anchor = self.geometry()
+        self.reminder.hide()
+        self._resize_anchored(anchor)
+        self._show_next_reminder()
+
+    def _flush_pending_acks(self) -> None:
+        if self._closing or not self._pending_acks:
+            return
+        if self._request is not None:
+            QTimer.singleShot(250, self._flush_pending_acks)
+            return
+        reminder_id = self._pending_acks.pop(0)
+        self._send(f"ack_reminder:{reminder_id}")
+        if self._pending_acks:
+            QTimer.singleShot(250, self._flush_pending_acks)
 
     def _set_audio_mode(self, mode, *, show=True, level=None):
         mode = mode if mode in {"listening", "speaking"} else "idle"
@@ -978,6 +1281,7 @@ class KakarotMascot(QWidget):
             elif settings_request > self._settings_request:
                 self._settings_request = settings_request
                 QTimer.singleShot(0, self.open_settings)
+            self._remember_reminders(state.get("reminders"))
             return
         if event_type == "ui_say":
             payload = event.get("payload")
@@ -1021,6 +1325,10 @@ class KakarotMascot(QWidget):
         push the strip off-screen.  Keep the previous bottom-right corner fixed
         and let the window grow upward, then clamp it to the available screen.
         """
+        self._resize_anchored(anchor)
+
+    def _resize_anchored(self, anchor=None) -> None:
+        """Grow or shrink the HUD around its bottom-right corner."""
         if self._closing:
             return
         if anchor is None:
@@ -1162,6 +1470,8 @@ class KakarotMascot(QWidget):
             return
         QTimer.singleShot(0, self._flush_pending_audio_control)
         QTimer.singleShot(0, self._flush_pending_auth)
+        QTimer.singleShot(0, self._flush_pending_events)
+        QTimer.singleShot(0, self._flush_pending_acks)
         health_before = (
             self._daemon_connected,
             self._api_connected,
@@ -1217,6 +1527,7 @@ class KakarotMascot(QWidget):
             if request and request[0] != "status":
                 self.show_message((response or {}).get("error", "Daemon did not reply."))
             return
+        self._remember_reminders(response.get("reminders"))
         if "speaking" in response:
             mode = (
                 "speaking" if response.get("speaking")
@@ -1316,6 +1627,11 @@ class KakarotMascot(QWidget):
                     return True
             if event.type() == QEvent.Type.MouseButtonRelease:
                 self._drag_offset = None
+                self._persist_position()
+        if watched is self.composer and event.type() == QEvent.Type.KeyPress:
+            if event.key() == Qt.Key.Key_Escape:
+                self._set_composer_visible(False)
+                return True
         return super().eventFilter(watched, event)
 
     def mousePressEvent(self, event):
@@ -1331,9 +1647,11 @@ class KakarotMascot(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_offset = None
+            self._persist_position()
             event.accept()
 
     def closeEvent(self, event):
+        self._persist_position()
         if self._allow_close:
             self.poll.stop()
             self._close_timer.stop()

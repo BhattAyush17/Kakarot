@@ -15,6 +15,7 @@ from google.genai import types as genai_types
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication, QHBoxLayout, QVBoxLayout
 
 from kakarot_daemon.audio import (
@@ -28,6 +29,7 @@ from kakarot_daemon.audio import (
 )
 from kakarot_daemon.control import ControlServer
 from kakarot_daemon.live import KakarotLiveService
+import kakarot_overlay.mascot as mascot_module
 from kakarot_overlay.mascot import KakarotMascot
 from kakarot_overlay.settings_dialog import SettingsDialog
 
@@ -511,13 +513,26 @@ class MascotLayoutTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self):
+        # Never read or write the real ~/.config/kakarot/hud_layout.json from a
+        # test run: the live mascot owns that file.
+        load = patch.object(mascot_module, "_load_hud_layout", return_value=None)
+        save = patch.object(mascot_module, "_save_hud_layout")
+        self._load_hud_layout = load.start()
+        self._save_hud_layout = save.start()
+        self.addCleanup(load.stop)
+        self.addCleanup(save.stop)
+
     def test_controls_and_settings_are_embedded_and_close_sends_sleep(self):
         mascot = KakarotMascot()
         self.assertIsInstance(mascot.layout(), QVBoxLayout)
         self.assertIs(mascot.layout().itemAt(0).widget(), mascot.avatar)
         self.assertIs(mascot.layout().itemAt(1).widget(), mascot.dock)
+        self.assertIs(mascot.layout().itemAt(2).widget(), mascot.composer)
+        self.assertIs(mascot.layout().itemAt(3).widget(), mascot.reminder)
         self.assertIsInstance(mascot.toolbar_layout, QHBoxLayout)
-        self.assertEqual(mascot.toolbar_layout.count(), 4)
+        self.assertEqual(mascot.toolbar_layout.count(), 5)
+        self.assertEqual(mascot.composer_button.text(), "[T]")
         self.assertFalse(hasattr(mascot, "settings"))
 
         mascot.show()
@@ -839,6 +854,160 @@ class MascotLayoutTests(unittest.TestCase):
             }
         )
         self.assertIn(mascot.LED_GREEN, mascot.status_led.styleSheet())
+
+    def test_composer_is_hidden_and_terminal_styled_until_toggled(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        self.assertTrue(mascot.composer.isHidden())
+        sheet = mascot.composer.styleSheet()
+        for fragment in (
+            "background-color: rgba(0, 0, 0, 0.85)",
+            "color: #ffffff",
+            "border: 1px solid #ffffff",
+            "font-family: monospace",
+            "padding: 4px",
+            "outline: none",
+        ):
+            self.assertIn(fragment, sheet)
+
+        mascot.show()
+        self.app.processEvents()
+        with patch.object(mascot.composer, "setFocus") as focus:
+            mascot.toggle_composer()
+            self.assertFalse(mascot.composer.isHidden())
+            focus.assert_called()
+
+        mascot.toggle_composer()
+        self.assertTrue(mascot.composer.isHidden())
+
+    def test_composer_return_sends_manual_input_then_clears_and_hides(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        sent = []
+        mascot._send_event = lambda event_type, payload: sent.append(
+            (event_type, payload)
+        )
+
+        mascot.composer.setText("open the terminal")
+        mascot._submit_composer_text()
+
+        self.assertEqual(sent, [("manual_input", {"text": "open the terminal"})])
+        self.assertEqual(mascot.composer.text(), "")
+        self.assertTrue(mascot.composer.isHidden())
+
+        # Blank input is dismissed without a daemon round trip.
+        mascot.composer.setText("   ")
+        mascot._submit_composer_text()
+        self.assertEqual(len(sent), 1)
+
+    def test_manual_input_waits_for_the_in_flight_request(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        sent = []
+        mascot._send_event = lambda event_type, payload: sent.append(payload)
+        mascot._request = ("status", {})
+
+        mascot.composer.setText("queued turn")
+        mascot._submit_composer_text()
+        self.assertEqual(sent, [])
+        self.assertEqual(mascot._pending_events, [("manual_input", {"text": "queued turn"})])
+
+        mascot._finish({"ok": True})
+        self.app.processEvents()
+        self.assertEqual(sent, [{"text": "queued turn"}])
+
+    def test_reminder_bubble_stays_until_the_ack_chip_is_clicked(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        received = []
+        mascot.reminder_received.connect(received.append)
+        sent = []
+        mascot._send = Mock(side_effect=lambda command, **args: sent.append(command))
+
+        mascot._handle_core_event(
+            {
+                "type": "state",
+                "state": {
+                    "connected": True,
+                    "reminders": [{"id": 7, "title": "Drink water"}],
+                },
+            }
+        )
+        self.app.processEvents()
+
+        self.assertEqual(received, ["Drink water"])
+        self.assertFalse(mascot.reminder.isHidden())
+        self.assertIn("Drink water", mascot.reminder_label.text())
+        self.assertEqual(mascot.reminder_ack.text(), "[x] Ack")
+        sheet = mascot.reminder.styleSheet()
+        self.assertIn("background-color: rgba(0, 0, 0, 0.85)", sheet)
+        self.assertIn("border: 1px solid #ffffff", sheet)
+        self.assertIn("font-family: monospace", sheet)
+
+        mascot.reminder_ack.click()
+        self.app.processEvents()
+
+        self.assertEqual(sent, ["ack_reminder:7"])
+        self.assertTrue(mascot.reminder.isHidden())
+
+        # The daemon's snapshot no longer lists it: no duplicate bubble.
+        mascot._handle_core_event(
+            {"type": "state", "state": {"connected": True, "reminders": []}}
+        )
+        self.assertTrue(mascot.reminder.isHidden())
+
+    def test_saved_position_is_restored_when_still_on_screen(self):
+        self._load_hud_layout.return_value = (40, 60)
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        self.assertEqual((mascot.x(), mascot.y()), (40, 60))
+
+    def test_off_screen_saved_position_falls_back_to_the_default(self):
+        self._load_hud_layout.return_value = (-50000, -50000)
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        self.assertNotEqual((mascot.x(), mascot.y()), (-50000, -50000))
+        self.assertTrue(
+            mascot.frameGeometry().intersects(
+                self.app.primaryScreen().availableGeometry()
+            )
+        )
+
+    def test_releasing_a_drag_persists_the_window_origin(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        mascot.move(37, 41)
+        mascot.show()
+        self.app.processEvents()
+
+        class _Release:
+            def button(self):
+                return Qt.MouseButton.LeftButton
+
+            def accept(self):
+                pass
+
+        mascot.mouseReleaseEvent(_Release())
+
+        position = mascot.pos()
+        self._save_hud_layout.assert_called_once_with(position.x(), position.y())
+
+    def test_tray_menu_toggles_the_hud_without_quitting(self):
+        mascot = KakarotMascot()
+        self.addCleanup(mascot.poll.stop)
+        self.assertEqual(
+            [action.text() for action in mascot.tray_menu.actions()],
+            ["Toggle HUD", "Quit Kakarot"],
+        )
+
+        mascot.show()
+        self.app.processEvents()
+        mascot.toggle_hud()
+        self.assertFalse(mascot.isVisible())
+
+        mascot.toggle_hud()
+        self.app.processEvents()
+        self.assertTrue(mascot.isVisible())
 
 
 if __name__ == "__main__":
